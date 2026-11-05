@@ -1,0 +1,8 @@
+node_modules
+.feltkit
+dist
+docs/screenshots
+e2e/screenshots
+.env
+.env.*
+.git
