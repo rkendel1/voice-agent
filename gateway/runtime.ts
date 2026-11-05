@@ -358,7 +358,7 @@ export class VoiceRuntime {
     const c = await this.bridge.call("gateway:summaryContext", { callId }, businessId);
     if (!c || c.call.summary) return;
     const asked = c.turns.filter((t: any) => t.speaker === "caller").map((t: any) => t.text).slice(0, 3);
-    const done = c.actions.filter((a: any) => a.status === "succeeded").map((a: any) => describeAction(a));
+    const done = c.actions.filter((a: any) => a.status === "succeeded" && !["contacts.lookup", "business.info", "appointments.availability", "conversations.history"].includes(a.capability)).map((a: any) => describeAction(a));
     const failed = c.actions.filter((a: any) => a.status !== "succeeded").map((a: any) => `${a.capability} ${a.status}${a.error ? ` (${a.error})` : ""}`);
     const summary = [
       asked.length ? `Caller said: ${asked.map((a: string) => `"${a.slice(0, 120)}"`).join("; ")}.` : "The caller said nothing that was recognised.",
@@ -571,7 +571,7 @@ function describeAction(a: { capability: string; result: any }): string {
   const r = a.result ?? {};
   switch (a.capability) {
     case "appointments.book": return `booked ${r.when ?? r.slot}`;
-    case "sms.send": return `texted the caller (${r.status ?? "queued"})`;
+    case "sms.send": return r.status === "delivered" || r.status === "sent" ? `texted the caller (${r.status})` : `tried to text the caller (${r.status ?? "unknown"})`;
     case "followups.create": return "left a follow-up for staff";
     case "calls.transfer": return `transferred to ${r.to}`;
     default: return a.capability;

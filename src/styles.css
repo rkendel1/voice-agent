@@ -90,7 +90,9 @@ ul.plain { margin: 0; padding-left: 18px; }
 .shell { display: grid; grid-template-columns: 236px 1fr; height: 100%; }
 .sidebar { background: var(--side); color: var(--side-ink); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 .side-brand { display: flex; align-items: center; gap: 10px; padding: 16px 16px 10px; font-weight: 800; font-size: 16px; letter-spacing: -.01em; }
-.side-tenant { margin: 0 10px 8px; }
+.side-tenant { margin: 0 10px 8px; color: var(--side-ink); }
+.sidebar .side-tenant .fk-btn { background: var(--side-hover) !important; color: var(--side-ink) !important; border-color: rgba(255,255,255,.18) !important; width: 100%; justify-content: space-between; }
+.side-tenant option { color: initial; background: initial; }
 .sidebar nav { flex: 1; padding: 4px 8px; }
 .nav-group { margin-bottom: 14px; }
 .nav-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--side-muted); padding: 4px 10px; font-weight: 700; }
@@ -256,6 +258,8 @@ ul.plain { margin: 0; padding-left: 18px; }
 .task { flex-direction: row; align-items: flex-start; gap: 8px; font-weight: 500; color: var(--ink); font-size: 13.5px; }
 
 /* Simulator phone */
+.shell.with-phone { grid-template-columns: 236px 1fr 372px; }
+.shell.with-phone .phone { position: static; width: auto; max-height: none; border-radius: 0; border-width: 0 0 0 2px; box-shadow: none; }
 .phone { position: fixed; right: 18px; bottom: 18px; width: 360px; max-height: min(680px, calc(100vh - 36px)); display: flex; flex-direction: column; background: var(--surface); border: 2px solid var(--sim); border-radius: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.25); z-index: 40; overflow: hidden; }
 .phone-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: var(--sim); color: #fff; }
 .phone-head .small { opacity: .85; }
@@ -280,12 +284,15 @@ ul.plain { margin: 0; padding-left: 18px; }
 .toast.error { background: var(--bad); color: #fff; }
 
 @media (max-width: 1100px) {
+  .shell.with-phone { grid-template-columns: 236px 1fr; }
+  .shell.with-phone .phone { position: fixed; width: 360px; max-height: min(680px, calc(100vh - 36px)); border-radius: 22px; border-width: 2px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
   .conversation { grid-template-columns: 1fr; }
   .context { border-left: 0; border-top: 1px solid var(--line); }
   .grid.two, .grid.three { grid-template-columns: 1fr; }
 }
 @media (max-width: 860px) {
-  .shell { grid-template-columns: 1fr; }
+  .shell, .shell.with-phone { grid-template-columns: 1fr; }
+  .shell.with-phone .phone { left: 8px; right: 8px; width: auto; bottom: 8px; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: 260px; z-index: 50; transform: translateX(-100%); transition: transform .2s; }
   .shell.menu-open .sidebar { transform: none; }
   .menu-btn { display: inline-block; }

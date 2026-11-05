@@ -127,7 +127,7 @@ function Shell({ toasts }: { toasts: Toasts }) {
   const incomplete = setup.data && !setup.data.complete;
 
   return (
-    <div className={`shell ${menu ? "menu-open" : ""}`}>
+    <div className={`shell ${menu ? "menu-open" : ""} ${phoneOpen && runtime?.url ? "with-phone" : ""}`}>
       <aside className="sidebar">
         <div className="side-brand"><Logo /> <span>Voice Agent</span></div>
         <TenantSwitcher className="side-tenant" />

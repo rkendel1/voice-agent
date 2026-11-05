@@ -101,8 +101,9 @@ export function SimulatorPhone({ runtimeUrl, onClose, toasts }: { runtimeUrl: st
   const hangup = async () => {
     if (!call) return;
     window.speechSynthesis?.cancel();
-    call.ws?.close();
+    // Like a phone network: the hang-up is reported, then the media stream closes.
     await post("/simulator/hangup", { sid: call.sid }).catch(() => {});
+    call.ws?.close();
     setCall(null);
   };
 

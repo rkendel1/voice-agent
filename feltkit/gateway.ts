@@ -397,7 +397,8 @@ export const sessionClosed = app.mutation({
   args: { callId: s.string(), reason: s.enum(["ended", "lost"]) },
   handler: async (ctx, { callId, reason }) => {
     const call = (await ctx.db.get(calls, callId)) ?? fail("NOT_FOUND", "Not found.");
-    if (call.session === "connected") await ctx.db.patch(calls, callId, { session: reason });
+    // A close on a call that already ended (the caller hung up) is an ordinary end, not a lost connection.
+    if (call.session === "connected") await ctx.db.patch(calls, callId, { session: CALL_TERMINAL.has(call.status) ? "ended" : reason });
   },
 });
 
@@ -494,6 +495,13 @@ export const summaryContext = app.query({
     if (!call) return null;
     const turns = await ctx.db.find(transcripts, { callId }, { orderBy: [{ field: "seq", direction: "asc" }] });
     const actions = await ctx.db.find(invocations, { callId });
+    // A text's outcome is its message's status now (delivered, failed…), not what the tool returned when it queued it.
+    const statusOf = async (i: any) => {
+      const id = i.capability === "sms.send" ? (i.result as any)?.messageId : null;
+      const m = typeof id === "string" ? await ctx.db.get(messages, id) : null;
+      return m ? { ...(i.result ?? {}), status: m.status } : i.result ?? null;
+    };
+    for (const a of actions as any[]) a.result = await statusOf(a);
     return { call: { id: call.id, direction: call.direction, outcome: call.outcome ?? null, summary: call.summary ?? null, agentId: call.agentId ?? null }, turns: turns.map((t) => ({ speaker: t.speaker, text: t.text })), actions: actions.map((i) => ({ capability: i.capability, status: i.status, result: i.result ?? null, error: i.error ?? null })) };
   },
 });

@@ -10,7 +10,7 @@ export function Live({ id, go, toasts }: { id?: string; go: (p: string) => void;
   const [filter, setFilter] = useState<"all" | "missed" | "inbound" | "outbound">("all");
   const recent = useQuery(api.calls.list, { filter, limit: 60 });
   useTick();
-  const selected = id ?? live?.[0]?.id;
+  const selected = id ?? live?.[0]?.id ?? recent?.[0]?.id;
   return (
     <div className="page split">
       <div className="list-pane">
