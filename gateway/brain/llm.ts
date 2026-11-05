@@ -53,15 +53,34 @@ export class LlmBrain implements Brain {
     this.#history = mergeRoles(this.#history);
   }
 
+  /** What the caller heard of an interrupted answer (applied when the aborted turn is recorded, whichever happens first). */
+  #heard: string | null = null;
+
   interrupted(spoken: string): void {
+    this.#heard = spoken;
     const last = this.#history.at(-1);
     if (last?.role === "assistant" && typeof last.content === "string") last.content = spoken ? `${spoken}…` : "(interrupted)";
   }
 
   async turn({ userText, emit, runTool, signal }: TurnInput): Promise<void> {
+    this.#heard = null;
     this.#push({ role: "user", content: userText });
     for (let round = 0; round <= MAX_TOOL_ROUNDS && !signal.aborted; round++) {
-      const { text, calls } = this.conn.protocol === "anthropic" ? await this.#anthropic(emit, signal) : await this.#openai(emit, signal);
+      let streamed = "";
+      const tee = (t: string) => { streamed += t; emit(t); };
+      let out: { text: string; calls: Call[] };
+      try {
+        out = this.conn.protocol === "anthropic" ? await this.#anthropic(tee, signal) : await this.#openai(tee, signal);
+      } catch (error) {
+        // Interrupted mid-answer: remember what was produced; interrupted() trims it to what was heard.
+        if (signal.aborted) {
+          const heard = this.#heard ?? streamed;
+          this.#history.push({ role: "assistant", content: heard ? `${heard}…` : "(interrupted)" });
+          return;
+        }
+        throw error;
+      }
+      const { text, calls } = out;
       if (signal.aborted) return;
       if (!calls.length || round === MAX_TOOL_ROUNDS) {
         if (/\b(goodbye|bye)\b/i.test(text) && this.channel === "voice") this.wantsHangup = true;
@@ -69,8 +88,9 @@ export class LlmBrain implements Brain {
       }
       const results: Array<{ call: Call; result: unknown }> = [];
       for (const call of calls) {
-        const name = call.name as ToolName;
-        const result = this.#tools.includes(name) ? await runTool(name, call.args) : { ok: false, error: `Tool ${call.name} is not available to this agent.` };
+        // Every request for a known capability goes to the application, granted or not: the authorization
+        // policy decides, and a refusal is recorded there. Only names that are no capability at all stop here.
+        const result = call.name in TOOLS ? await runTool(call.name as ToolName, call.args) : { ok: false, error: `There is no tool called ${call.name}.` };
         results.push({ call, result });
       }
       this.#toolResults(results);

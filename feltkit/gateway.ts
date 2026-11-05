@@ -160,10 +160,16 @@ export const smsStatus = app.mutation({
 /** Claim a queued text for sending: queued → sending. Anything else (sent, blocked, already sending) is not sent again. */
 export const sendClaim = app.mutation({
   access: "voice.work",
-  args: { messageId: s.string() },
-  handler: async (ctx, { messageId }) => {
+  args: { messageId: s.string(), resumed: s.optional(s.boolean()) },
+  handler: async (ctx, { messageId, resumed }) => {
     const m = await ctx.db.get(messages, messageId);
     if (!m) return { send: false as const, status: "missing" };
+    // A runtime stopped after handing it to the provider and before recording the answer: it may have been
+    // sent. Recorded as unknown, never sent again (a person can check the provider and resend).
+    if (m.status === "sending" && resumed) {
+      await ctx.db.patch(messages, m.id, { status: "unknown", error: "The runtime stopped while sending: it may or may not have been sent.", updatedAt: Date.now() });
+      return { send: false as const, status: "unknown" };
+    }
     if (m.status !== "queued") return { send: false as const, status: m.status };
     const c = await ctx.db.get(contacts, (await ctx.db.get(conversations, m.conversationId))!.contactId);
     // Consent can change between queueing and sending: STOP wins.
@@ -278,9 +284,13 @@ function decision(call: any, v: Awaited<ReturnType<typeof voiceSettings>>, b: an
 /** Claim an outbound call for dialling (queued → initiated), with the session binding. */
 export const dialClaim = app.mutation({
   access: "voice.work",
-  args: { callId: s.string(), sessionTokenHash: s.string({ minLength: 32, maxLength: 128 }) },
-  handler: async (ctx, { callId, sessionTokenHash }) => {
+  args: { callId: s.string(), sessionTokenHash: s.string({ minLength: 32, maxLength: 128 }), resumed: s.optional(s.boolean()) },
+  handler: async (ctx, { callId, sessionTokenHash, resumed }) => {
     const call = await ctx.db.get(calls, callId);
+    if (call && call.status === "initiated" && !call.providerSid && resumed) {
+      await ctx.db.patch(calls, callId, { status: "failed", outcome: "failed", summary: "The runtime stopped while dialling: the provider may have placed the call. Not dialled again.", endedAt: Date.now() });
+      return { dial: false as const, status: "failed" };
+    }
     if (!call || call.status !== "queued") return { dial: false as const, status: call?.status ?? "missing" };
     const contact = (await ctx.db.get(contacts, call.contactId))!;
     if (contact.doNotCall) {

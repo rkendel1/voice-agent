@@ -104,7 +104,8 @@ export class Phone {
   setup(callSid?: string) { this.ws.send(JSON.stringify({ type: "setup", ...(callSid ? { callSid } : {}) })); }
   say(text: string) { this.ws.send(JSON.stringify({ type: "prompt", voicePrompt: text, lang: "en-US", last: true })); }
   partial(text: string) { this.ws.send(JSON.stringify({ type: "prompt", voicePrompt: text, last: false })); }
-  interrupt(heard: string) { this.ws.send(JSON.stringify({ type: "interrupt", utteranceUntilInterrupt: heard, durationUntilInterruptMs: 500 })); }
+  /** Speak over the agent: like Twilio, the phone drops whatever of the answer it has not played. */
+  interrupt(heard: string) { this.#current = ""; this.ws.send(JSON.stringify({ type: "interrupt", utteranceUntilInterrupt: heard, durationUntilInterruptMs: 500 })); }
   /** Wait until the agent has finished n utterances in total (or the session ends). */
   async utterances(n: number, ms = 5000): Promise<string[]> {
     const until = Date.now() + ms;

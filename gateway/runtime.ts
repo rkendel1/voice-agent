@@ -276,13 +276,13 @@ export class VoiceRuntime {
     return done;
   }
 
-  async #perform(w: { kind: string; refId: string; businessId: string }): Promise<{ outcome: "done" | "retry" | "failed"; error?: string }> {
+  async #perform(w: { kind: string; refId: string; businessId: string; resumed?: boolean }): Promise<{ outcome: "done" | "retry" | "failed"; error?: string }> {
     switch (w.kind) {
       case "sms.send": {
-        const r = await this.sendNow(w.businessId, w.refId);
+        const r = await this.sendNow(w.businessId, w.refId, { resumed: Boolean(w.resumed) });
         return r.status === "queued" ? { outcome: "retry", error: String(r.error ?? "provider unreachable") } : { outcome: "done" };
       }
-      case "call.dial": await this.dialNow(w.businessId, w.refId); return { outcome: "done" };
+      case "call.dial": await this.dialNow(w.businessId, w.refId, { resumed: Boolean(w.resumed) }); return { outcome: "done" };
       case "agent.sms": await this.#agentSms(w.businessId, w.refId); return { outcome: "done" };
       case "call.summarize": await this.#summarize(w.businessId, w.refId); return { outcome: "done" };
     }
@@ -293,8 +293,8 @@ export class VoiceRuntime {
    * Hand a queued text to its provider, once. The result is the provider's answer, which is what an agent
    * may tell a person: accepted (with the provider's id), refused, or unknown.
    */
-  async sendNow(businessId: string, messageId: string): Promise<{ ok: boolean; status: string; error?: string; messageId: string }> {
-    const claim = await this.bridge.call("gateway:sendClaim", { messageId }, businessId);
+  async sendNow(businessId: string, messageId: string, opts: { resumed?: boolean } = {}): Promise<{ ok: boolean; status: string; error?: string; messageId: string }> {
+    const claim = await this.bridge.call("gateway:sendClaim", { messageId, ...(opts.resumed ? { resumed: true } : {}) }, businessId);
     if (!claim.send) return { ok: ["sent", "delivered"].includes(claim.status), status: claim.status, messageId, ...(claim.status === "blocked" ? { error: "blocked by policy" } : {}) };
     const provider = this.#provider(claim.provider);
     if (!provider) {
@@ -306,9 +306,9 @@ export class VoiceRuntime {
     return { ok: r.outcome === "accepted", status: res.status, messageId, ...(r.error ? { error: r.error } : {}) };
   }
 
-  async dialNow(businessId: string, callId: string) {
+  async dialNow(businessId: string, callId: string, opts: { resumed?: boolean } = {}) {
     const token = this.#token(`call:${callId}`);
-    const claim = await this.bridge.call("gateway:dialClaim", { callId, sessionTokenHash: hashToken(token) }, businessId);
+    const claim = await this.bridge.call("gateway:dialClaim", { callId, sessionTokenHash: hashToken(token), ...(opts.resumed ? { resumed: true } : {}) }, businessId);
     if (!claim.dial) return;
     const provider = this.#provider(claim.provider);
     if (!provider) return this.bridge.call("gateway:dialResult", { callId, outcome: "refused", error: `${claim.provider} is not configured or not enabled.` }, businessId);
