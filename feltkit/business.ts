@@ -123,7 +123,7 @@ export const setup = app.query({
     ];
     return {
       steps, complete: steps.every((x) => x.done),
-      runtime: status ? { provider: status.provider, ready: status.ready, fresh: runtimeFresh, problems: status.problems, publicBaseUrl: status.publicBaseUrl ?? null, signatureFailures: status.signatureFailures, lastWebhookAt: status.lastWebhookAt ?? null } : null,
+      runtime: status ? { provider: status.provider, url: status.url ?? null, simulator: Boolean(status.simulator), ready: status.ready, fresh: runtimeFresh, problems: status.problems, publicBaseUrl: status.publicBaseUrl ?? null, signatureFailures: status.signatureFailures, lastWebhookAt: status.lastWebhookAt ?? null } : null,
     };
   },
 });

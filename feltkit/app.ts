@@ -403,6 +403,9 @@ export const runtimeStatus = app.collection("runtimeStatus", {
   ready: s.boolean(),
   problems: s.array(s.string({ maxLength: 300 })),
   publicBaseUrl: s.optional(s.string()),
+  /** Where the runtime listens on this machine (the development simulator phone connects here). */
+  url: s.optional(s.string()),
+  simulator: s.optional(s.boolean()),
   signatureFailures: s.integer({ minimum: 0 }),
   lastWebhookAt: s.optional(s.number()),
   startedAt: s.number(),

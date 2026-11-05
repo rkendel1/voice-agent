@@ -129,7 +129,7 @@ export class VoiceRuntime {
   async heartbeat() {
     await this.bridge.call("gateway:heartbeat", {
       provider: this.settings.provider, ready: this.problems.length === 0, problems: this.problems.slice(0, 20),
-      ...(this.settings.publicBaseUrl ? { publicBaseUrl: this.settings.publicBaseUrl } : {}), signatureFailures: this.signatureFailures,
+      ...(this.settings.publicBaseUrl ? { publicBaseUrl: this.settings.publicBaseUrl } : {}), url: this.url, simulator: this.simulatorEnabled, signatureFailures: this.signatureFailures,
       ...(this.lastWebhookAt ? { lastWebhookAt: this.lastWebhookAt } : {}), startedAt: this.#startedAt,
     });
   }

@@ -45,7 +45,7 @@ export const route = app.query({
 
 export const heartbeat = app.mutation({
   access: "voice.work",
-  args: { provider: Provider, ready: s.boolean(), problems: s.array(s.string({ maxLength: 300 }), { maxItems: 20 }), publicBaseUrl: s.optional(s.string({ maxLength: 300 })), signatureFailures: s.integer({ minimum: 0 }), lastWebhookAt: s.optional(s.number()), startedAt: s.number() },
+  args: { provider: Provider, ready: s.boolean(), problems: s.array(s.string({ maxLength: 300 }), { maxItems: 20 }), publicBaseUrl: s.optional(s.string({ maxLength: 300 })), url: s.optional(s.string({ maxLength: 300 })), simulator: s.optional(s.boolean()), signatureFailures: s.integer({ minimum: 0 }), lastWebhookAt: s.optional(s.number()), startedAt: s.number() },
   handler: async (ctx, args) => {
     const [row] = await ctx.db.find(runtimeStatus, {});
     const value = { ...args, heartbeatAt: Date.now() };
