@@ -12,5 +12,5 @@
     "verbatimModuleSyntax": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["src", "feltkit", "tests", "agent", "vite.config.ts"]
+  "include": ["src", "feltkit", "gateway", "server", "tests", "vite.config.ts"]
 }

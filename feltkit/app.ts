@@ -278,7 +278,6 @@ export const calls = app.collection("calls", {
   takenOver: s.optional(s.string()),
   outcome: s.optional(s.enum(["resolved", "appointment_booked", "message_taken", "transferred", "missed", "abandoned", "failed"])),
   summary: s.optional(s.string({ maxLength: 2000 })),
-  transcriptSegments: s.integer({ minimum: 0 }),
   startedAt: s.number(),
   answeredAt: s.optional(s.number()),
   endedAt: s.optional(s.number()),
