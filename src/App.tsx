@@ -127,7 +127,7 @@ function Shell({ toasts }: { toasts: Toasts }) {
   const incomplete = setup.data && !setup.data.complete;
 
   return (
-    <div className={`shell ${menu ? "menu-open" : ""} ${phoneOpen && runtime?.url ? "with-phone" : ""}`}>
+    <div className={`shell ${menu ? "menu-open" : ""} ${phoneOpen && runtime?.simulator ? "with-phone" : ""}`}>
       <aside className="sidebar">
         <div className="side-brand"><Logo /> <span>Voice Agent</span></div>
         <TenantSwitcher className="side-tenant" />
@@ -178,7 +178,7 @@ function Shell({ toasts }: { toasts: Toasts }) {
           {page === "activity" && <Activity />}
         </main>
       </div>
-      {phoneOpen && runtime?.url && <SimulatorPhone runtimeUrl={runtime.url} onClose={() => setPhoneOpen(false)} toasts={toasts} />}
+      {phoneOpen && runtime?.simulator && <SimulatorPhone runtimeUrl={runtime.url ?? ""} onClose={() => setPhoneOpen(false)} toasts={toasts} />}
     </div>
   );
 }

@@ -3,6 +3,9 @@
  * on a real port in the same process, and a simulated phone that speaks ConversationRelay over a real
  * WebSocket. Nothing is mocked between the phone and the database.
  */
+import { createHmac } from "node:crypto";
+import { FeltKitError } from "@feltdb/feltkit";
+import type { ComponentContext } from "@feltdb/feltkit/server";
 import { createTestApp, type TestApp } from "@feltdb/feltkit/testing";
 import WebSocket from "ws";
 import { api } from "../feltkit/_generated/api.js";
@@ -51,13 +54,57 @@ export async function business(t: TestApp, name: string, owner: typeof ADA, numb
   return { id, me, agentId: agent!.id as string, numberId };
 }
 
-export async function setup(options: Partial<VoiceRuntimeOptions> = {}) {
+/**
+ * The component context for the voice runtime over a test runtime: the same contract FeltKit gives the
+ * component under `feltkit dev`/`start` (ComponentHost; tested in FeltKit), here so tests can drive the
+ * runtime directly. Calls go through the runtime as the declared principal, in a tenant by live membership.
+ */
+export function voiceContext(runtime: any, opts: { production?: boolean } = {}): ComponentContext {
+  const base = { id: VOICE.id, type: "agent" as const, roles: VOICE.roles, displayName: VOICE.displayName };
+  let session: Promise<unknown> | null = null;
+  return {
+    name: "voice",
+    application: runtime.app.name,
+    environment: { name: opts.production ? "production" : "test", production: Boolean(opts.production) },
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    async call(name: string, args: object = {}, options: { tenant?: string } = {}) {
+      session ??= runtime.issueSession(base, { kind: "component", via: "runtime" });
+      await session;
+      const principal = options.tenant ? await runtime.withTenant(base, options.tenant) : base;
+      if (options.tenant && !principal.tenant) throw new FeltKitError("FORBIDDEN", `${base.id} is not a member of that tenant.`);
+      let result = await runtime.call(name, args, { principal, via: "integration" });
+      for (let i = 1; !result.ok && result.error.code === "CONFLICT" && i <= 4; i++) { await new Promise((r) => setTimeout(r, 10 * i)); result = await runtime.call(name, args, { principal, via: "integration" }); }
+      if (!result.ok) throw new FeltKitError(result.error.code, result.error.message);
+      return result.value;
+    },
+    async credential(id: string) {
+      if (id !== "twilio-auth-token") throw new FeltKitError("FORBIDDEN", `undeclared credential ${id}`);
+      return runtime.credentials.withSecret({ reference: { secretId: id } }, (s: any) => s.value).catch(() => null);
+    },
+    derive: (purpose: string) => createHmac("sha256", runtime.authSecret()).update(`feltkit.component:${runtime.app.name}:voice:${purpose}`).digest("base64url"),
+    async model() {
+      const st = await runtime.models.status();
+      if (!st.ready || st.problems.length || !st.model || !["anthropic", "openai", "openai-compatible"].includes(st.protocol)) return null;
+      const ref = st.credential.ref?.replace(/^credential-ref:/, "");
+      const apiKey = ref ? await runtime.credentials.withSecret({ reference: { secretId: ref } }, (s: any) => s.value).catch(() => null) : null;
+      return { protocol: st.protocol, model: st.model, endpoint: st.endpoint, apiKey };
+    },
+  };
+}
+
+export async function startVoice(runtime: any, options: Partial<VoiceRuntimeOptions> & { production?: boolean } = {}) {
+  const { production, ...rest } = options;
+  const rt = await new VoiceRuntime({ context: voiceContext(runtime, { production }), workIntervalMs: 0, ...rest }).start();
+  return rt.listen(0);
+}
+
+export async function setup(options: Partial<VoiceRuntimeOptions> & { production?: boolean } = {}) {
   const t = await createTestApp();
   const acme = await business(t, "Acme Dental", ADA, NUMBER);
   const grace = await join(t, acme.id, ADA, GRACE, "staff");
   const evil = await business(t, "Evil Corp", MALLORY, OTHER_NUMBER);
   const logs: string[] = [];
-  const rt = await new VoiceRuntime({ runtime: t.runtime as any, port: 0, workIntervalMs: 0, log: (l) => logs.push(l), ...options }).start();
+  const rt = await startVoice(t.runtime, { log: (l) => logs.push(l), ...options });
   return { t, acme, ada: acme.me, grace, evil, mallory: evil.me, rt, logs, close: async () => { await rt.close(); await t.close(); } };
 }
 

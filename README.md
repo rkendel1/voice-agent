@@ -29,9 +29,9 @@ npm run dev
 
 ```
   App        http://localhost:3000
-  Dashboard  http://localhost:3000/_feltkit/#token=fka_…   (FeltKit Studio)
-  AppPort    http://localhost:3000/appport
-  Voice      http://localhost:3001  (provider: simulator)
+  Dashboard  http://localhost:3000/_feltkit/#token=fka_…
+  AppPort    http://localhost:3000/appport  (… capabilities)
+  MCP        http://localhost:3000/mcp
 ```
 
 1. Open <http://localhost:3000/?as=ada> (Ada is a development identity; she also holds the deployment `operator` role).
@@ -82,9 +82,10 @@ The voice runtime re-reads Configuration, Credentials and Models every few secon
 
 ## Connect Twilio (real calls and texts)
 
-You need a Twilio account, a voice- and SMS-capable number, and a public **https** URL that reaches the voice
-port (3001). In development use a tunnel, e.g. `cloudflared tunnel --url http://localhost:3001` or
-`ngrok http 3001`.
+You need a Twilio account, a voice- and SMS-capable number, and a public **https** URL that reaches the app
+(port 3000). In development use a tunnel, e.g. `cloudflared tunnel --url http://localhost:3000` or
+`ngrok http 3000`. Through a tunnel only the voice component's routes (`/twilio/*`) answer; FeltKit's own
+routes and Studio stay local-only in development, and the simulator answers only on this machine.
 
 1. **Studio → Services → Configuration** (act as Ada): add `TELEPHONY_PROVIDER` = `twilio`,
    `TWILIO_ACCOUNT_SID` = your `AC…` id, `PUBLIC_BASE_URL` = your tunnel's https URL.
@@ -121,23 +122,26 @@ makes goes through the authorization policy (a refusal is recorded and returned 
 ## How it is built
 
 ```
- Caller ── PSTN ── Twilio ──(signed webhooks, ConversationRelay WebSocket)──┐
-                                                                            ▼
- ┌────────────────────────────── one Node process ───────────────────────────────┐
- │  Voice runtime (gateway/)                    FeltKit (startDev / startProduction)│
- │   providers/twilio.ts  providers/simulator.ts   ├─ feltkit/*.ts  functions        │
- │   voice.ts  (turns, barge-in, operator control) ├─ _authz.ts     the policy       │
- │   brain/    (scripted · Anthropic · OpenAI)     ├─ tools.ts      agent capabilities│
- │   runtime.ts (work queue: send, dial, reply)    ├─ Studio, AppPort, MCP, Services │
- │        │  every read/write = runtime.call(...)  │                                │
- │        └── as principal "voice-runtime", in the business, live membership ──▶ FeltDB │
- └────────────────────────────────────────────────────────────────────────────────┘
-        ▲ app + Studio on :3000                         voice webhooks + media on :3001
+ Caller ── PSTN ── Twilio ──(signed webhooks + ConversationRelay WebSocket: /twilio/*)──┐
+ Browser ───────────────────────(app, Studio, AppPort: everything else)────────────────┤
+                                                                                         ▼  one port
+ ┌──────────────────── one process: `feltkit dev` / `feltkit start` ─────────────────────┐
+ │  FeltKit: functions (feltkit/*.ts), policy, Studio, AppPort, MCP, Services, FeltDB      │
+ │   └─ runtime component "voice" (gateway/component.ts), declared in feltkit/app.ts:      │
+ │        providers/twilio.ts · providers/simulator.ts · voice.ts · brain/ · runtime.ts    │
+ │        acts only through the app's functions as "voice-runtime", in a business by live  │
+ │        membership; reads only the twilio-auth-token credential; reports health          │
+ └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **FeltDB is the only source of truth.** The voice runtime holds no state: every event is a FeltKit call
-  as its own principal (`voice-runtime`, role `voice`), inside the business it belongs to, checked against
-  its *live* membership. A business that removes it closes it out on the next call.
+- **One application, one process, one port.** The voice runtime is a FeltKit *runtime component*
+  (`feltkit({ components: { voice } })`): `feltkit build` bundles it, `feltkit dev`/`feltkit start` run it with
+  the app, every `feltkit deploy` target carries it, and `/_feltkit/health` is `ready` only when voice is
+  (`partial` when the app serves but voice is not configured, `unhealthy` when voice failed; named checks
+  `webhooks`, `media`, `work`).
+- **FeltDB is the only source of truth.** The voice runtime holds no state: every event is a call to the
+  app's functions as its own principal (`voice-runtime`, role `voice`), inside the business it belongs to,
+  checked against its *live* membership. A business that removes it closes it out on the next call.
 - **Businesses are FeltKit tenants.** Every business record is tenant-scoped; `authorize` (default deny)
   never trusts a business id from a request.
 - **Agents act only through capabilities** (`feltkit/tools.ts`, published on AppPort), each with an explicit
@@ -176,33 +180,44 @@ npm run typecheck
 ## Build and deploy
 
 ```bash
-npm run build
+npx feltkit deploy --target container
 ```
 
-```bash
-npm start
-```
+The supported FeltKit command builds the functions, the frontend **and the voice component**, boots the
+result, and refuses to write an artifact unless the voice component loaded and its routes reach it. The
+artifact (`.feltkit/deploy`) runs anywhere its `DEPLOY.md` says: Docker (`docker compose -f
+.feltkit/deploy/docker-compose.yml up --build`) or plain Node (`npm ci --omit=dev && npm start` in it). One
+process serves the app, Studio, AppPort and the voice routes on `PORT`; the container's health check is
+`/_feltkit/health`, so a deployment whose voice component is down is reported unhealthy. The other
+targets (`--target fly`, `hosted`, `self-hosted`, `vercel`, `cloudflare`) carry the component the same way.
 
-`npm start` runs FeltKit's production server (app, AppPort, optional Studio) on `PORT` (3000) and the voice
-runtime on `VOICE_PORT` (3001). Put TLS in front of the voice port at `PUBLIC_BASE_URL`. Copy `.env.example`
-to `.env.local` and set at least `FELTKIT_AUTH_SECRET`. In production, put the Twilio auth token in
-`FELTKIT_CREDENTIAL_TWILIO_AUTH_TOKEN` (FeltKit's production custody reads credentials from the environment)
-and the variables with `npx feltkit config import <file> --env production`.
+In production:
+1. Set `FELTKIT_AUTH_SECRET` (and the rest of `.env.example`) on the host.
+2. Put the Twilio auth token in `FELTKIT_CREDENTIAL_TWILIO_AUTH_TOKEN` (FeltKit's production custody reads it there).
+3. Set `TELEPHONY_PROVIDER`, `TWILIO_ACCOUNT_SID`, `PUBLIC_BASE_URL` with `npx feltkit config import <file> --env production`.
+4. Route the public https name to the app's port unchanged (a reverse proxy must pass WebSocket upgrades);
+   point Twilio at `<PUBLIC_BASE_URL>/twilio/...`.
 
-**Important:** `npx feltkit deploy` packages only FeltKit's backend bundle and frontend, and its image runs
-`feltkit start`: that deployment serves the app but **does not run the voice runtime**, so it answers no
-calls (docs/GAPS.md, G2). Deploy the repository with the included `Dockerfile` (runs `npm start`) instead.
-That image has not been built in CI yet (no Docker daemon was available); see docs/ACCEPTANCE.md.
+Until 2–3 are done the app serves people but `/_feltkit/health` answers 503 `partial` with the reason.
+Rollback: start the previous artifact on the same state (the container target's contract). Evidence of all of
+this, on the real artifact: [docs/DEPLOYMENT-EVIDENCE.md](docs/DEPLOYMENT-EVIDENCE.md) (`node --import tsx scripts/deployment-evidence.mjs`).
+
+`npx feltkit deploy --target appboundry` does not run this application: AppBoundry hosts have no accounts or
+tenancy yet and refuse application agents (docs/GAPS.md).
 
 Production Studio is off unless `FELTKIT_DASHBOARD=1` and `FELTKIT_OPERATOR_KEY` are set; then
 `npx feltkit manage` prints a one-time sign-in link. `npx feltkit readiness --env production` checks the
 environment before you go live.
 
+**This branch uses an unreleased FeltKit** (runtime components, rkendel1/feltkit branch
+`claude/eager-ritchie-qazq3g`), vendored as `vendor/feltdb-feltkit-0.3.19-components.0.tgz` so a clean clone
+installs and deploys. Replace it with the published release once there is one.
+
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
-| Setup says "The runtime has not reported" | `npm run dev` / `npm start` is not running, or the voice port is taken (`VOICE_PORT`). |
+| Setup says "The runtime has not reported" | The app is not running, or its voice component failed to start: `/_feltkit/health` names the reason. |
 | Twilio webhooks get 503 | Twilio is not fully configured: Setup & health lists what is missing. |
 | Twilio webhooks get 403; *Rejected requests* grows | `PUBLIC_BASE_URL` differs from the URL Twilio calls (scheme, host, trailing slash), or the auth token is wrong. |
 | An agent answers with the scripted brain although set to the model | No model is ready: Setup & health says why; fix it in Studio → Models. |

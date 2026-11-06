@@ -69,6 +69,22 @@ export const app = feltkit({
       { id: "alan", name: "Alan Turing", roles: ["person"] },
     ],
   },
+  // The voice runtime (gateway/): a FeltKit runtime component. FeltKit runs it with the application, on its port,
+  // routes Twilio's webhooks and media WebSockets and the development simulator to it, and reports its health in
+  // /_feltkit/health — the application is not ready while voice is not. It acts only through this application's
+  // functions as "voice-runtime" (the application agent below), and reads only the Twilio auth token.
+  components: {
+    voice: {
+      entry: "gateway/component.ts",
+      routes: ["/twilio/", "/simulator/"],
+      websocket: true,
+      required: true,
+      principal: { id: "voice-runtime", roles: ["voice"], displayName: "Voice runtime" },
+      credentials: ["twilio-auth-token"],
+      network: "egress",
+      description: "Telephony: provider webhooks, ConversationRelay media sessions, the voice loop, durable sends and dials.",
+    },
+  },
   services: {
     notifications: { types: ["call.missed", "sms.received", "call.escalated", "task.assigned"] },
     // Operators register endpoints in Studio → Services → Webhooks: a CRM, a calendar sync, a Slack bridge.

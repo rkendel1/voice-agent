@@ -9,11 +9,11 @@
  *   TELEPHONY_PROVIDER, TWILIO_ACCOUNT_SID, PUBLIC_BASE_URL (Configuration), twilio-auth-token (Credentials),
  *   and the model (Models) for agents whose brain is "environment".
  */
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { isFeltKitError } from "@feltdb/feltkit";
-import type { FeltKitRuntime } from "@feltdb/feltkit/server";
+import type { ComponentContext, ComponentHealth, ComponentState } from "@feltdb/feltkit/server";
 import { Bridge } from "./bridge.js";
 import { DeterministicBrain } from "./brain/deterministic.js";
 import { LlmBrain, type ModelConnection } from "./brain/llm.js";
@@ -24,12 +24,8 @@ import type { AnswerPlan, CallStatus, InboundCall, InboundSms, ProviderId, SmsSt
 import { hashToken, VoiceSession } from "./voice.js";
 
 export interface VoiceRuntimeOptions {
-  runtime: FeltKitRuntime;
-  port?: number;
-  host?: string;
-  /** The app's origin, allowed to drive the simulator from the browser (development). */
-  appOrigin?: string;
-  production?: boolean;
+  /** The FeltKit component context (gateway/component.ts), or one built for tests. */
+  context: ComponentContext;
   /** Serve the simulator (default: outside production; in production only with SIMULATOR_ENABLED=1). */
   simulator?: boolean;
   log?: (line: string) => void;
@@ -61,10 +57,13 @@ export class VoiceRuntime {
   #closed = false;
   #again = false;
   #modelProblem: string | null = null;
+  /** The origin the simulator phone reached us at (the application's own, under FeltKit). */
+  #simulatorBase: string | null = null;
+  #lastWorkAt = 0;
   readonly #simCalls = new Map<string, { sid: string; callId: string; businessId: string; answeredAt?: number; startedAt: number }>();
 
   constructor(readonly options: VoiceRuntimeOptions) {
-    this.bridge = new Bridge(options.runtime);
+    this.bridge = new Bridge(options.context);
     this.simulator.onSmsStatus = (sid, status, errorCode) => void this.#simSmsStatus(sid, status, errorCode);
     this.simulator.onCallStatus = (ring, status) => void this.#simDialStatus(ring, status);
   }
@@ -74,26 +73,32 @@ export class VoiceRuntime {
   }
 
   get simulatorEnabled(): boolean {
-    return this.options.simulator ?? (!this.options.production || process.env.SIMULATOR_ENABLED === "1");
+    return this.options.simulator ?? (!this.options.context.environment.production || process.env.SIMULATOR_ENABLED === "1");
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
+  /** Start the runtime's work: configuration refresh, heartbeat, the work loop. Traffic arrives through request() and upgrade(). */
   async start(): Promise<this> {
+    this.#lastWorkAt = Date.now();
     await this.refresh();
-    this.server = createServer((req, res) => void this.#http(req, res));
-    this.server.on("upgrade", (req, socket, head) => this.#upgrade(req, socket as any, head));
-    await new Promise<void>((resolve, reject) => {
-      this.server!.once("error", reject);
-      this.server!.listen(this.options.port ?? 3001, this.options.host ?? "127.0.0.1", () => resolve());
-    });
-    const address = this.server.address() as { port: number };
-    this.url = `http://${this.options.host && !["0.0.0.0", "::"].includes(this.options.host) ? this.options.host : "localhost"}:${address.port}`.replace("127.0.0.1", "localhost");
     const every = (ms: number, fn: () => unknown) => { const t = setInterval(() => { if (!this.#closed) void Promise.resolve(fn()).catch((e) => this.log(String(e?.message ?? e))); }, ms); t.unref?.(); this.#timers.push(t); };
     every(5000, () => this.refresh());
     every(5000, () => this.heartbeat());
     if ((this.options.workIntervalMs ?? 400) > 0) every(this.options.workIntervalMs ?? 400, () => this.work());
     await this.heartbeat();
+    return this;
+  }
+
+  /** Serve on a port of its own (tests, or a host that routes a separate port). Under FeltKit, the application's server routes to it. */
+  async listen(port = 0, host = "127.0.0.1"): Promise<this> {
+    this.server = createServer((req, res) => void this.request(req, res));
+    this.server.on("upgrade", (req, socket, head) => this.upgrade(req, socket as any, head));
+    await new Promise<void>((resolve, reject) => {
+      this.server!.once("error", reject);
+      this.server!.listen(port, host, () => resolve());
+    });
+    this.url = `http://localhost:${(this.server.address() as { port: number }).port}`;
     return this;
   }
 
@@ -129,7 +134,7 @@ export class VoiceRuntime {
   async heartbeat() {
     await this.bridge.call("gateway:heartbeat", {
       provider: this.settings.provider, ready: this.problems.length === 0, problems: this.problems.slice(0, 20),
-      ...(this.settings.publicBaseUrl ? { publicBaseUrl: this.settings.publicBaseUrl } : {}), url: this.url, simulator: this.simulatorEnabled, signatureFailures: this.signatureFailures,
+      ...(this.settings.publicBaseUrl ? { publicBaseUrl: this.settings.publicBaseUrl } : {}), ...(this.url ? { url: this.url } : {}), simulator: this.simulatorEnabled, signatureFailures: this.signatureFailures,
       ...(this.lastWebhookAt ? { lastWebhookAt: this.lastWebhookAt } : {}), startedAt: this.#startedAt,
     });
   }
@@ -145,12 +150,12 @@ export class VoiceRuntime {
 
   /** The base URL providers call back: the public URL for Twilio, this server for the simulator. */
   #base(id: ProviderId) {
-    return id === "twilio" ? this.settings.publicBaseUrl ?? "" : this.url;
+    return id === "twilio" ? this.settings.publicBaseUrl ?? "" : this.#simulatorBase ?? this.url;
   }
 
   /** The media-session token for a call key: derived (HMAC with the app's auth secret), so it survives a restart; only its hash is stored. */
   #token(key: string) {
-    return createHmac("sha256", this.options.runtime.authSecret()).update(`voice-relay:${key}`).digest("base64url");
+    return this.options.context.derive(`voice-relay:${key}`);
   }
 
   // ── Agents ──────────────────────────────────────────────────────────────────
@@ -161,15 +166,13 @@ export class VoiceRuntime {
    */
   async brainFor(ctx: AgentContext, channel: Channel, _businessId: string): Promise<Brain> {
     if (ctx.agent.brain !== "environment") return new DeterministicBrain(ctx, channel);
-    const status = await this.options.runtime.models.status();
-    const protocol = status.protocol as ModelConnection["protocol"] | null;
-    if (!status.ready || status.problems.length || !protocol || !["anthropic", "openai", "openai-compatible"].includes(protocol) || !status.model) {
-      this.#modelProblem = `Agent "${ctx.agent.name}" uses the environment model, but none is ready (${status.problems.map((p) => p.message).join(" ") || "not configured"}): the scripted agent answers instead. Choose a model in Studio → Models.`;
+    const model = await this.options.context.model();
+    if (!model) {
+      this.#modelProblem = `Agent "${ctx.agent.name}" uses the environment model, but none is ready: the scripted agent answers instead. Choose a model in Studio → Models.`;
       return new DeterministicBrain(ctx, channel);
     }
     this.#modelProblem = null;
-    const apiKey = status.credential.ref ? await this.bridge.secret(status.credential.ref.replace(/^credential-ref:/, "")) : null;
-    return new LlmBrain(ctx, channel, { protocol, model: status.model, endpoint: status.endpoint, apiKey }, this.options.fetch ?? fetch);
+    return new LlmBrain(ctx, channel, model, this.options.fetch ?? fetch);
   }
 
   // ── Provider-neutral handlers ─────────────────────────────────────────────
@@ -241,6 +244,32 @@ export class VoiceRuntime {
     return null;
   }
 
+  /**
+   * The component's health, for the application's /_feltkit/health. Named checks let an operator (and a
+   * control plane) tell which part is unavailable:
+   *   webhooks  a provider is configured and its webhooks can be verified (or the development simulator)
+   *   media     WebSocket media sessions can be accepted at a URL the provider can reach
+   *   work      the durable work loop is running (sends, dials, agent replies, summaries)
+   */
+  health(): ComponentHealth {
+    const twilio = this.settings.provider === "twilio";
+    const configured = twilio ? Boolean(this.settings.accountSid && this.settings.authToken && this.settings.publicBaseUrl?.startsWith("https://")) : this.simulatorEnabled;
+    const webhooks: { state: ComponentState; detail?: string } = configured
+      ? { state: "ready", detail: twilio ? `Twilio, signed at ${this.settings.publicBaseUrl}` : "development simulator" }
+      : { state: "unconfigured", detail: this.problems.filter((p) => !p.startsWith("Agent ")).join(" ") || "No telephony provider is configured." };
+    const media: { state: ComponentState; detail?: string } = this.#closed
+      ? { state: "failed", detail: "closed" }
+      : configured ? { state: "ready", detail: `${this.sessions.size} live session(s)` } : { state: "unconfigured", detail: "Needs a configured provider (and an https PUBLIC_BASE_URL for Twilio)." };
+    const manual = this.options.workIntervalMs === 0;
+    const work: { state: ComponentState; detail?: string } = this.#closed
+      ? { state: "failed", detail: "closed" }
+      : manual || Date.now() - this.#lastWorkAt < 10_000 ? { state: "ready" } : { state: "degraded", detail: "The work loop has not run in 10 s." };
+    const checks = { webhooks, media, work };
+    const order: ComponentState[] = ["failed", "starting", "degraded", "unconfigured", "ready"];
+    const state = order.find((st) => Object.values(checks).some((c) => c.state === st)) ?? "ready";
+    return { state, ...(state !== "ready" ? { detail: Object.entries(checks).filter(([, c]) => c.state !== "ready").map(([n, c]) => `${n}: ${c.detail ?? c.state}`).join("; ") } : {}), checks };
+  }
+
   // ── Durable work ────────────────────────────────────────────────────────────
 
   /** Do due work now (not in manual mode, `workIntervalMs: 0`, where the caller drives `work()`). */
@@ -251,6 +280,7 @@ export class VoiceRuntime {
 
   /** Lease and perform due work. Runs on a timer and when something new is queued; never concurrently. */
   async work(): Promise<number> {
+    this.#lastWorkAt = Date.now();
     if (this.#working) { this.#again = true; return 0; }
     this.#working = true;
     let done = 0;
@@ -376,7 +406,8 @@ export class VoiceRuntime {
     if (this.sessions.get(s.callId) === s) this.sessions.delete(s.callId);
   }
 
-  #upgrade(req: IncomingMessage, socket: import("node:net").Socket, head: Buffer) {
+  /** A WebSocket upgrade on one of the component's routes (the media sessions). */
+  upgrade(req: IncomingMessage, socket: import("node:net").Socket, head: Buffer) {
     const url = new URL(req.url ?? "/", "http://local");
     const provider: ProviderId | null = url.pathname === "/twilio/relay" ? "twilio" : url.pathname === "/simulator/relay" ? "simulator" : null;
     const callId = url.searchParams.get("callId"), b = url.searchParams.get("b"), t = url.searchParams.get("t");
@@ -434,7 +465,8 @@ export class VoiceRuntime {
 
   // ── HTTP ───────────────────────────────────────────────────────────────────
 
-  async #http(req: IncomingMessage, res: ServerResponse) {
+  /** An HTTP request on one of the component's routes (/twilio/*, /simulator/*). */
+  async request(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://local");
     const path = url.pathname;
     try {
@@ -509,6 +541,7 @@ export class VoiceRuntime {
     }
     if (req.method === "OPTIONS") return void res.writeHead(204).end();
     if (!this.simulatorEnabled || !isLoopback(req)) return json(res, 403, { error: "The simulator is available only in development, on this machine." });
+    this.#simulatorBase = `http://${header(req, "host")}`;
     if (origin && !this.#allowedOrigin(origin)) return json(res, 403, { error: "Origin not allowed." });
     if (req.method === "GET" && url.pathname === "/simulator/phone") {
       const number = url.searchParams.get("number") ?? "";
@@ -562,7 +595,7 @@ export class VoiceRuntime {
   #allowedOrigin(origin: string) {
     try {
       const o = new URL(origin);
-      return ["localhost", "127.0.0.1"].includes(o.hostname) && (!this.options.appOrigin || o.origin === new URL(this.options.appOrigin).origin || o.port === new URL(this.options.appOrigin).port);
+      return ["localhost", "127.0.0.1"].includes(o.hostname);
     } catch { return false; }
   }
 }

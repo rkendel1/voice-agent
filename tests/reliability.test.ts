@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { api } from "../feltkit/_generated/api.js";
-import { VoiceRuntime } from "../gateway/runtime.js";
 import { SIM_REFUSE, SIM_UNDELIVERED } from "../gateway/providers/simulator.js";
 import { CALLER, NUMBER, VOICE, call, post, setup, until } from "./helpers.js";
+import { startVoice } from "./helpers.js";
 
 test("duplicate webhook delivery: the same provider event twice is one message", async () => {
   const s = await setup();
@@ -73,7 +73,7 @@ test("agent restart: work a stopped runtime had leased is taken over when its le
     // Runtime B starts (the state survives a FeltKit restart too).
     await s.rt.close();
     await s.t.restart();
-    const b = await new VoiceRuntime({ runtime: s.t.runtime as any, port: 0, workIntervalMs: 0, log: () => {} }).start();
+    const b = await startVoice(s.t.runtime);
     try {
       assert.equal(await b.work(), 2);
       const { items } = await s.ada.query(api.conversations.timeline, { conversationId: conv!.id });
