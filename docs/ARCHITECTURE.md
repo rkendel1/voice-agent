@@ -25,9 +25,10 @@ FeltKit's integration with them).
 **New application code**: the data model and policy (`feltkit/`), agent capabilities (`feltkit/tools.ts`), the
 provider-independent ingest contract (`feltkit/gateway.ts`), the voice runtime (`gateway/`), the UI (`src/`).
 
-**New platform functionality required**: none was added to the platform. Two gaps had to be worked around
-inside the application and are registered in [GAPS.md](GAPS.md) (G1 inbound HTTP/WebSocket surface, G2
-deploy packaging). Each workaround is contained in `server/` and `gateway/runtime.ts`.
+**New platform functionality required**: runtime components in FeltKit (`feltkit({ components })`: routes,
+WebSocket upgrades, build, deploy, health; FeltKit docs/COMPONENTS.md) closed G1 and G2, which the first version
+had worked around with launchers of its own; and AppBoundry's `components@1` (ADR-9). Remaining gaps are in
+[GAPS.md](GAPS.md).
 
 **Provider-specific**: everything in `gateway/providers/twilio.ts` (signatures, TwiML, REST). The application
 and voice session see provider-neutral events and the ConversationRelay message protocol.
