@@ -16,6 +16,23 @@ around in the application or open. "Belongs in" is where the fix belongs.
 | G7 | AppBoundry artifacts refuse `app.agent` and have no accounts or tenancy (FK-GAP-013). | `feltkit build --target appboundry` cannot produce this app (same as Multiplayer), with or without AppBoundry's new `components@1`. | Deploy with FeltKit's own targets. | AppBoundry (identity/tenancy host interfaces, app agents). |
 | G9 | No access from this session to the shared Hetzner host; AppBoundry managed hosting has no public routing (`ROUTING: unavailable`) and customer execution is disabled there. | No deployment to the shared host was made. | Local evidence on the real artifact (docs/DEPLOYMENT-EVIDENCE.md). | Operator access; AppBoundry routing/TLS (design §18). |
 
+## AppBoundry companion components (`components@1`)
+
+Implemented on rkendel1/appboundry branch `claude/eager-ritchie-qazq3g` (manifest and artifact verification, a
+companion host package, agent support behind `APPBOUNDRY_COMPANION_EXECUTION` (off by default), per-component
+deployment health gating Running, a Caddy site-block renderer). FeltKit's `--target appboundry` emits it; a
+FeltKit-built artifact loads in AppBoundry's loader and a tampered component is refused
+(`ARTIFACT_COMPONENT_DIGEST_MISMATCH`). Open there:
+
+| Item | Status |
+|---|---|
+| Release | `pnpm release:appboundry:check` fails until `@appport/appboundry` is version-bumped (the vendored host differs from published 1.11.0): a release decision, not made here. |
+| Companion image, real Docker, Caddy validation | Dockerfile only; no real-Docker companion run; rendered site block checked structurally, not by Caddy. |
+| `network: "none"` | Refused on Docker hosts (`COMPONENT_NETWORK_UNENFORCEABLE`): no egress control. |
+| Tenancy, model, secret API | `ctx.call(…, {tenant})` → `TENANCY_UNSUPPORTED`; `ctx.model()` → null; secrets are files an operator places per application. |
+| Placement | The portal does not know which hosts enable companions or their memory (256 MiB default). |
+| Voice Agent | Still cannot run there (G7). |
+
 ## Provider-side items not verified
 
 | Item | Status |
