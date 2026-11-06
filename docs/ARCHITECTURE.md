@@ -41,12 +41,23 @@ against a local stand-in, not Twilio itself ([ACCEPTANCE.md](ACCEPTANCE.md)).
 FeltKit stamps and filters it; the policy refuses any `businessId` argument that is not the session's. No
 application-level tenancy code exists to get wrong.
 
-**ADR-2 · The voice runtime is embedded, not a second service.** Telephony needs public, provider-signed
-form webhooks and a WebSocket per call; FeltKit 0.3.18 serves neither to applications (G1). The runtime runs
-in the same process as FeltKit through its public embedding API and acts only through `runtime.call` as the
-principal `voice-runtime`, inside a business via `runtime.withTenant` (live membership). It has no database,
-no state and no authority of its own. Rejected: a separate service calling AppPort over HTTP (one session per
-business, a second deployment), and patching FeltKit's server (incompatible assumptions about a shared repo).
+**ADR-2 · The voice runtime is a FeltKit runtime component (superseded the embedding launcher).** Telephony
+needs public, provider-signed form webhooks and a WebSocket per call, which FeltKit functions cannot serve. The
+first version ran the gateway beside FeltKit from launchers of its own (`server/dev.ts`, `server/start.ts`) on a
+second port; `feltkit deploy` did not carry it, so a deployment served the UI and could not take a call while
+reporting healthy (G1, G2). It is now declared in `feltkit({ components: { voice } })` — a reusable FeltKit
+contract (FeltKit docs/COMPONENTS.md), not an app-specific launcher:
+- `feltkit build` bundles it; `feltkit dev` / `feltkit start` run it in the application's process; every
+  `feltkit deploy` target carries it; the boot check refuses an artifact whose component does not load.
+- Its routes (`/twilio/*`, `/simulator/*`, HTTP and WebSocket) are served on the application's one port; a proxy
+  routes one name to one port.
+- It acts only through the application's functions as `voice-runtime`, in a business by live membership; reads
+  only `twilio-auth-token`; derives its session-token key from the app's auth secret.
+- Its health is the application's: `/_feltkit/health` is `ready` only when voice is; `partial` while the
+  provider is not configured; `unhealthy` when voice failed; checks `webhooks`, `media`, `work`.
+Rejected: a second process/container (FeltDB local state is single-writer; a second lifecycle and health for one
+application), a second port (single-port hosts), and AppBoundry's WASM guest (no network, secrets or WebSockets
+by design; see ADR-9).
 
 **ADR-3 · Twilio, with ConversationRelay.** Considered Twilio and Telnyx. Telnyx's REST API is JSON with a
 bearer key, so outbound SMS could have used `app.integration` directly; but its voice path streams raw audio,
@@ -75,6 +86,13 @@ Completions) with no SDK, so providers stay replaceable.
 
 **ADR-7 · Call summaries are derived, not generated.** A summary lists what the caller said and what actions
 succeeded or failed, from records. It cannot claim an outcome that did not happen.
+
+**ADR-9 · AppBoundry: components beside the guest, gated.** AppBoundry's guest is a sandboxed WebAssembly
+module; the voice component needs native networking, secrets and WebSockets. AppBoundry gains a `components@1`
+artifact section and a companion host that runs a component beside the guest under the same application
+identity and deployment, with per-component health in the deployment evidence; companion execution is off by
+default on a host. Voice Agent itself still cannot run on AppBoundry: AppBoundry hosts have no accounts or
+tenancy and refuse `app.agent` (G7).
 
 **ADR-8 · Configuration split.** Per-business settings are FeltDB records edited in the app by the business's
 owners/admins (and visible in Studio → Data). Deployment settings (provider, credentials, model, webhooks)
