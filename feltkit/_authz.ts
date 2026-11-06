@@ -38,11 +38,11 @@ add("business",
   // The voice runtime, inside the business an event belongs to.
   "gateway:inboundSms", "gateway:smsStatus", "gateway:inboundCall", "gateway:callStatus", "gateway:sessionOpened", "gateway:sessionClosed",
   "gateway:transcript", "gateway:context", "gateway:controls", "gateway:controlApplied", "gateway:transferResult", "gateway:sendClaim", "gateway:sendResult",
-  "gateway:dialClaim", "gateway:dialResult", "gateway:summaryContext", "gateway:recordSummary", "gateway:smsAgentContext", "gateway:purge", "gateway:toolDenied",
+  "gateway:dialClaim", "gateway:dialResult", "gateway:summaryContext", "gateway:recordSummary", "gateway:smsAgentContext", "gateway:purge", "gateway:toolDenied", "gateway:answerPlan", "gateway:agentReply",
   // The application agent's durable run (feltkit/agents.ts).
   "agent/voice",
 );
-add("global", "gateway:route", "gateway:claimWork", "gateway:finishWork", "gateway:heartbeat", "gateway:status");
+add("global", "gateway:route", "gateway:claimWork", "gateway:finishWork", "gateway:heartbeat", "gateway:status", "gateway:settings");
 add("tool", "tools:lookupContact", "tools:businessInfo", "tools:availability", "tools:book", "tools:followup", "tools:sendSms", "tools:transfer", "tools:history");
 
 /** The capability each tool function is: an agent profile must list it. */

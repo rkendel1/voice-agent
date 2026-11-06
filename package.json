@@ -5,13 +5,24 @@
   "description": "Voice Agent: an open-source phone and SMS agent for businesses, built on FeltKit.",
   "license": "MIT",
   "homepage": "https://getfeltkit.com",
-  "repository": { "type": "git", "url": "git+https://github.com/rkendel1/voice-agent.git" },
-  "keywords": ["feltkit", "starter", "voice", "telephony", "sms", "agents", "twilio"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rkendel1/voice-agent.git"
+  },
+  "keywords": [
+    "feltkit",
+    "starter",
+    "voice",
+    "telephony",
+    "sms",
+    "agents",
+    "twilio"
+  ],
   "type": "module",
   "scripts": {
-    "dev": "tsx server/dev.ts",
+    "dev": "feltkit dev",
     "build": "feltkit build",
-    "start": "tsx server/start.ts",
+    "start": "feltkit start",
     "test": "feltkit test",
     "inspect": "feltkit inspect",
     "deploy": "feltkit deploy",
@@ -19,7 +30,7 @@
     "test:e2e": "node e2e/voice-agent.e2e.cjs"
   },
   "dependencies": {
-    "@feltdb/feltkit": "0.3.18",
+    "@feltdb/feltkit": "file:vendor/feltdb-feltkit-0.3.19-components.0.tgz",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "tsx": "^4.20.6",
@@ -34,5 +45,7 @@
     "typescript": "5.9.3",
     "vite": "7.3.7"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }

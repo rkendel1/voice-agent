@@ -12,7 +12,7 @@
 import { fail, s, type MutationCtx } from "@feltdb/feltkit";
 import { agents, app, appointments, calls, contacts, conversations, invocations, messages, numberRoutes, phoneNumbers, providerEvents, runtimeStatus, transcripts, work } from "./app.js";
 import { business } from "./_authz.js";
-import { enqueue, ensureContact, ensureConversation, loadBusiness, recordAudit, touchConversation } from "./_ops.js";
+import { enqueue, ensureContact, ensureConversation, loadBusiness, queueSms, recordAudit, touchConversation } from "./_ops.js";
 import { agentOnDuty, CALL_TERMINAL, callAdvances, isOpen, localParts, smsAdvances, smsKeyword } from "./_policy.js";
 import { VOICE_RUNTIME } from "./business.js";
 
@@ -45,7 +45,7 @@ export const route = app.query({
 
 export const heartbeat = app.mutation({
   access: "voice.work",
-  args: { provider: Provider, ready: s.boolean(), problems: s.array(s.string({ maxLength: 300 }), { maxItems: 20 }), publicBaseUrl: s.optional(s.string({ maxLength: 300 })), signatureFailures: s.integer({ minimum: 0 }), lastWebhookAt: s.optional(s.number()), startedAt: s.number() },
+  args: { provider: Provider, ready: s.boolean(), problems: s.array(s.string({ maxLength: 300 }), { maxItems: 20 }), publicBaseUrl: s.optional(s.string({ maxLength: 300 })), url: s.optional(s.string({ maxLength: 300 })), simulator: s.optional(s.boolean()), signatureFailures: s.integer({ minimum: 0 }), lastWebhookAt: s.optional(s.number()), startedAt: s.number() },
   handler: async (ctx, args) => {
     const [row] = await ctx.db.find(runtimeStatus, {});
     const value = { ...args, heartbeatAt: Date.now() };
@@ -160,10 +160,16 @@ export const smsStatus = app.mutation({
 /** Claim a queued text for sending: queued → sending. Anything else (sent, blocked, already sending) is not sent again. */
 export const sendClaim = app.mutation({
   access: "voice.work",
-  args: { messageId: s.string() },
-  handler: async (ctx, { messageId }) => {
+  args: { messageId: s.string(), resumed: s.optional(s.boolean()) },
+  handler: async (ctx, { messageId, resumed }) => {
     const m = await ctx.db.get(messages, messageId);
     if (!m) return { send: false as const, status: "missing" };
+    // A runtime stopped after handing it to the provider and before recording the answer: it may have been
+    // sent. Recorded as unknown, never sent again (a person can check the provider and resend).
+    if (m.status === "sending" && resumed) {
+      await ctx.db.patch(messages, m.id, { status: "unknown", error: "The runtime stopped while sending: it may or may not have been sent.", updatedAt: Date.now() });
+      return { send: false as const, status: "unknown" };
+    }
     if (m.status !== "queued") return { send: false as const, status: m.status };
     const c = await ctx.db.get(contacts, (await ctx.db.get(conversations, m.conversationId))!.contactId);
     // Consent can change between queueing and sending: STOP wins.
@@ -183,11 +189,13 @@ export const sendClaim = app.mutation({
  */
 export const sendResult = app.mutation({
   access: "voice.work",
-  args: { messageId: s.string(), outcome: s.enum(["accepted", "refused", "unknown"]), providerSid: s.optional(s.string({ maxLength: 64 })), error: s.optional(s.string({ maxLength: 300 })) },
-  handler: async (ctx, { messageId, outcome, providerSid, error }) => {
+  args: { messageId: s.string(), outcome: s.enum(["accepted", "refused", "unknown"]), providerSid: s.optional(s.string({ maxLength: 64 })), error: s.optional(s.string({ maxLength: 300 })), retryable: s.optional(s.boolean()) },
+  handler: async (ctx, { messageId, outcome, providerSid, error, retryable }) => {
     const { businessId } = business(ctx);
     const m = (await ctx.db.get(messages, messageId)) ?? fail("NOT_FOUND", "Message not found.");
     if (m.status !== "sending") return { status: m.status };
+    // It never reached the provider (unreachable, rate-limited): back to the queue, safe to try again.
+    if (outcome === "refused" && retryable) { await ctx.db.patch(messages, m.id, { status: "queued", ...(error ? { error } : {}), updatedAt: Date.now() }); return { status: "queued" }; }
     const status = outcome === "accepted" ? "sent" : outcome === "refused" ? "failed" : "unknown";
     await ctx.db.patch(messages, m.id, { status, ...(providerSid ? { providerSid } : {}), ...(error ? { error } : {}), updatedAt: Date.now() });
     if (status !== "sent") await recordAudit(ctx, businessId, RUNTIME, "system", "sms.failed", `Text to ${m.to} ${status}: ${error ?? ""}`.trim(), m.id);
@@ -255,7 +263,7 @@ export const inboundCall = app.mutation({
       businessId, conversationId: conversation.id, contactId: contact.id, numberId: number.id, direction: "inbound", provider: a.provider, providerSid: a.sid,
       from: a.from, to: a.to, status: "ringing", handling, ...(answers ? { agentId: agent!.id, sessionTokenHash: a.sessionTokenHash } : {}),
       session: "none", ...(fallback ? { transfer: { to: fallback.phone, toName: fallback.name, status: "dialing" as const, reason: "No agent on duty", by: RUNTIME, at: now } } : {}),
-      transcriptSegments: 0, startedAt: now,
+      startedAt: now,
     });
     await touchConversation(ctx, conversation, "call", `Incoming call${answers ? ` · ${agent!.name}` : fallback ? ` · forwarded to ${fallback.name}` : ""}`, 1, now);
     await recordAudit(ctx, businessId, a.from, "provider", "call.inbound", `Call from ${a.from} to ${a.to}: ${handling}${answers ? ` (${agent!.name})` : fallback ? ` → ${fallback.name}` : ""}`, id);
@@ -276,9 +284,13 @@ function decision(call: any, v: Awaited<ReturnType<typeof voiceSettings>>, b: an
 /** Claim an outbound call for dialling (queued → initiated), with the session binding. */
 export const dialClaim = app.mutation({
   access: "voice.work",
-  args: { callId: s.string(), sessionTokenHash: s.string({ minLength: 32, maxLength: 128 }) },
-  handler: async (ctx, { callId, sessionTokenHash }) => {
+  args: { callId: s.string(), sessionTokenHash: s.string({ minLength: 32, maxLength: 128 }), resumed: s.optional(s.boolean()) },
+  handler: async (ctx, { callId, sessionTokenHash, resumed }) => {
     const call = await ctx.db.get(calls, callId);
+    if (call && call.status === "initiated" && !call.providerSid && resumed) {
+      await ctx.db.patch(calls, callId, { status: "failed", outcome: "failed", summary: "The runtime stopped while dialling: the provider may have placed the call. Not dialled again.", endedAt: Date.now() });
+      return { dial: false as const, status: "failed" };
+    }
     if (!call || call.status !== "queued") return { dial: false as const, status: call?.status ?? "missing" };
     const contact = (await ctx.db.get(contacts, call.contactId))!;
     if (contact.doNotCall) {
@@ -339,7 +351,7 @@ export const callStatus = app.mutation({
       const ended = (await ctx.db.get(calls, call.id))!;
       await recordAudit(ctx, businessId, a.sid, "provider", "call.ended", `Call ${call.direction === "inbound" ? "from" : "to"} ${call.direction === "inbound" ? call.from : call.to} ended: ${a.status}${ended.outcome ? ` (${ended.outcome})` : ""}`, call.id);
       if (ended.outcome === "missed") ctx.afterCommit.agent("voice", { callId: call.id });
-      if (ended.transcriptSegments > 0) await enqueue(ctx, businessId, "call.summarize", call.id, now);
+      if ((await ctx.db.query(transcripts, { where: [{ field: "callId", eq: call.id }], limit: 1 })).records.length) await enqueue(ctx, businessId, "call.summarize", call.id, now);
       ctx.afterCommit.webhooks.emit("call.completed", { businessId, callId: call.id, direction: call.direction, status: a.status, outcome: ended.outcome ?? null, durationSec: a.duration ?? null, contactId: call.contactId, at: now });
       const conv = await ctx.db.get(conversations, call.conversationId);
       if (conv) await touchConversation(ctx, conv, "call", `Call ${a.status}${ended.outcome ? ` · ${ended.outcome.replace("_", " ")}` : ""}`, ended.outcome === "missed" ? 1 : 0, now);
@@ -373,7 +385,9 @@ export const sessionOpened = app.mutation({
     if (providerSid && call.providerSid && providerSid !== call.providerSid) fail("FORBIDDEN", "The media session belongs to another call.");
     const now = Date.now();
     await ctx.db.patch(calls, callId, { session: "connected", status: "in-progress", ...(call.answeredAt ? {} : { answeredAt: now }), ...(providerSid && !call.providerSid ? { providerSid } : {}) });
-    return { agentId: call.agentId ?? null, transcriptSegments: call.transcriptSegments };
+    // Turns are numbered from where the record ends: a reconnected session continues the transcript.
+    const [last] = (await ctx.db.query(transcripts, { where: [{ field: "callId", eq: callId }], orderBy: [{ field: "seq", direction: "desc" }], limit: 1 })).records;
+    return { agentId: call.agentId ?? null, transcriptSegments: last ? last.seq + 1 : 0 };
   },
 });
 
@@ -383,7 +397,8 @@ export const sessionClosed = app.mutation({
   args: { callId: s.string(), reason: s.enum(["ended", "lost"]) },
   handler: async (ctx, { callId, reason }) => {
     const call = (await ctx.db.get(calls, callId)) ?? fail("NOT_FOUND", "Not found.");
-    if (call.session === "connected") await ctx.db.patch(calls, callId, { session: reason });
+    // A close on a call that already ended (the caller hung up) is an ordinary end, not a lost connection.
+    if (call.session === "connected") await ctx.db.patch(calls, callId, { session: CALL_TERMINAL.has(call.status) ? "ended" : reason });
   },
 });
 
@@ -394,11 +409,10 @@ export const transcript = app.mutation({
   handler: async (ctx, a) => {
     const { businessId } = business(ctx);
     const b = await loadBusiness(ctx);
-    const call = (await ctx.db.get(calls, a.callId)) ?? fail("NOT_FOUND", "Not found.");
+    (await ctx.db.get(calls, a.callId)) ?? fail("NOT_FOUND", "Not found.");
     if (!b.policy.transcripts) return { stored: false };
     if ((await ctx.db.find(transcripts, { callId: a.callId, seq: a.seq })).length) return { stored: false, duplicate: true };
     await ctx.db.insert(transcripts, { businessId, callId: a.callId, seq: a.seq, speaker: a.speaker, text: a.text, interrupted: a.interrupted, partial: a.partial, at: Date.now() });
-    await ctx.db.patch(calls, call.id, { transcriptSegments: Math.max(call.transcriptSegments, a.seq + 1) });
     return { stored: true };
   },
 });
@@ -481,6 +495,13 @@ export const summaryContext = app.query({
     if (!call) return null;
     const turns = await ctx.db.find(transcripts, { callId }, { orderBy: [{ field: "seq", direction: "asc" }] });
     const actions = await ctx.db.find(invocations, { callId });
+    // A text's outcome is its message's status now (delivered, failed…), not what the tool returned when it queued it.
+    const statusOf = async (i: any) => {
+      const id = i.capability === "sms.send" ? (i.result as any)?.messageId : null;
+      const m = typeof id === "string" ? await ctx.db.get(messages, id) : null;
+      return m ? { ...(i.result ?? {}), status: m.status } : i.result ?? null;
+    };
+    for (const a of actions as any[]) a.result = await statusOf(a);
     return { call: { id: call.id, direction: call.direction, outcome: call.outcome ?? null, summary: call.summary ?? null, agentId: call.agentId ?? null }, turns: turns.map((t) => ({ speaker: t.speaker, text: t.text })), actions: actions.map((i) => ({ capability: i.capability, status: i.status, result: i.result ?? null, error: i.error ?? null })) };
   },
 });
@@ -505,5 +526,46 @@ export const purge = app.mutation({
     for (const t of old.records) await ctx.db.delete(transcripts, t.id);
     if (old.records.length) await recordAudit(ctx, businessId, RUNTIME, "system", "retention.purged", `Deleted ${old.records.length} transcript turns older than ${b.policy.transcriptRetentionDays} days`);
     return { deleted: old.records.length };
+  },
+});
+
+/**
+ * The telephony settings an operator sets in Studio → Services → Configuration (no code, no redeploy):
+ *   TELEPHONY_PROVIDER  "simulator" (default) or "twilio"
+ *   TWILIO_ACCOUNT_SID  the Twilio account (its auth token is the credential twilio-auth-token)
+ *   PUBLIC_BASE_URL     the https URL Twilio reaches this runtime at (webhooks and media)
+ * Read by the runtime with its own configuration.read permission.
+ */
+export const settings = app.query({
+  access: "voice.work",
+  handler: async (ctx) => {
+    const get = async (name: string) => (await ctx.services.configuration.get(name).catch(() => null)) ?? null;
+    return { provider: (await get("TELEPHONY_PROVIDER")) ?? null, twilioAccountSid: await get("TWILIO_ACCOUNT_SID"), publicBaseUrl: await get("PUBLIC_BASE_URL") };
+  },
+});
+
+/** How to answer an outbound call the provider has just connected (Twilio requests the answer URL). */
+export const answerPlan = app.query({
+  access: "voice.work",
+  args: { callId: s.string() },
+  handler: async (ctx, { callId }) => {
+    const call = await ctx.db.get(calls, callId);
+    if (!call || CALL_TERMINAL.has(call.status)) return null;
+    const b = await loadBusiness(ctx);
+    const agent = call.agentId ? await ctx.db.get(agents, call.agentId) : null;
+    return { callId: call.id, handling: call.handling, from: call.from, to: call.to, greeting: call.direction === "inbound" ? agent?.greeting ?? `Thanks for calling ${b.name}.` : agent ? `Hello, this is ${agent.name} calling from ${b.name}.` : `Hello, this is ${b.name}.`, disclosure: b.policy.transcripts ? b.policy.disclosure : "", voice: agent?.voice ?? { ttsProvider: "ElevenLabs" as const, language: "en-US" } };
+  },
+});
+
+/** The SMS agent's answer to an inbound text: sent through the same policy path as any text. */
+export const agentReply = app.mutation({
+  access: "voice.work",
+  args: { messageId: s.string(), agentId: s.string(), body: s.string({ minLength: 1, maxLength: 1400 }) },
+  handler: async (ctx, { messageId, agentId, body }) => {
+    const b = await loadBusiness(ctx);
+    const inbound = (await ctx.db.get(messages, messageId)) ?? fail("NOT_FOUND", "Message not found.");
+    const conversation = (await ctx.db.get(conversations, inbound.conversationId))!;
+    const contact = (await ctx.db.get(contacts, conversation.contactId))!;
+    return queueSms(ctx, { business: b, conversation, contact, body, author: agentId, authorKind: "agent", idempotencyKey: `agent-reply:${messageId}`, now: Date.now() });
   },
 });

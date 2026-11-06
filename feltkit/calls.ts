@@ -80,7 +80,7 @@ export const start = app.mutation({
     const callId = await ctx.db.insert(calls, {
       businessId, conversationId: conversation.id, contactId: contact.id, numberId: from.id, direction: "outbound", provider: from.provider,
       from: from.e164, to: contact.phone, status: "queued", handling: agent?.active ? "agent" : "operator", ...(agent?.active ? { agentId: agent.id } : {}),
-      session: "none", transcriptSegments: 0, startedAt: now, startedBy: key,
+      session: "none", startedAt: now, startedBy: key,
     });
     await enqueue(ctx, businessId, "call.dial", callId, now);
     await touchConversation(ctx, conversation, "call", `Outbound call by ${actorName}`, 0, now);
