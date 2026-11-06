@@ -76,7 +76,9 @@ test("privilege escalation: the voice runtime cannot act as staff, people cannot
     await rejects(s.rt.bridge.call("business:get", {}, other), "FORBIDDEN");
     // Global runtime functions are closed to people.
     await rejects(s.ada.query(api.gateway.route, { to: NUMBER }), "FORBIDDEN");
-    await rejects(s.ada.mutation(api.gateway.claimWork, { limit: 1, leaseMs: 1000 }), "FORBIDDEN");
+    // The runtime's durable work is reachable only through its own component context (ctx.work): no function claims it.
+    const asAda: any = await (s.t.runtime as any).call("gateway:claimWork", { limit: 1, leaseMs: 1000 }, { principal: await (s.t.runtime as any).withTenant(ADA, s.acme.id), via: "test" });
+    assert.deepEqual([asAda.ok, asAda.ok ? null : asAda.error.code], [false, "FUNCTION_NOT_FOUND"]);
   } finally { await s.close(); }
 });
 

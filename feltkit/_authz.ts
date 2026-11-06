@@ -42,7 +42,7 @@ add("business",
   // The application agent's durable run (feltkit/agents.ts).
   "agent/voice",
 );
-add("global", "gateway:route", "gateway:claimWork", "gateway:finishWork", "gateway:heartbeat", "gateway:status", "gateway:settings");
+add("global", "gateway:route", "gateway:heartbeat", "gateway:status", "gateway:settings");
 add("tool", "tools:lookupContact", "tools:businessInfo", "tools:availability", "tools:book", "tools:followup", "tools:sendSms", "tools:transfer", "tools:history");
 
 /** The capability each tool function is: an agent profile must list it. */

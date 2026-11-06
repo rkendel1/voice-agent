@@ -81,6 +81,11 @@ export function voiceContext(runtime: any, opts: { production?: boolean } = {}):
       if (id !== "twilio-auth-token") throw new FeltKitError("FORBIDDEN", `undeclared credential ${id}`);
       return runtime.credentials.withSecret({ reference: { secretId: id } }, (s: any) => s.value).catch(() => null);
     },
+    // As FeltKit's ComponentHost gives it: only this component's work, leased and fenced.
+    work: {
+      claim: (options: { kinds?: readonly string[]; limit?: number; leaseMs?: number } = {}) => runtime.claimComponentWork("voice", options),
+      finish: (item: { id: string; version: number }, outcome: any) => runtime.finishComponentWork("voice", item, outcome),
+    },
     derive: (purpose: string) => createHmac("sha256", runtime.authSecret()).update(`feltkit.component:${runtime.app.name}:voice:${purpose}`).digest("base64url"),
     async model() {
       const st = await runtime.models.status();

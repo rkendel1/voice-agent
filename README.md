@@ -210,7 +210,7 @@ Production Studio is off unless `FELTKIT_DASHBOARD=1` and `FELTKIT_OPERATOR_KEY`
 environment before you go live.
 
 **This branch uses an unreleased FeltKit** (runtime components, rkendel1/feltkit branch
-`claude/eager-ritchie-qazq3g`), vendored as `vendor/feltdb-feltkit-0.3.19-components.0.tgz` so a clean clone
+`claude/eager-ritchie-qazq3g`), vendored as `vendor/feltdb-feltkit-0.3.19-components.1.tgz` so a clean clone
 installs and deploys. Replace it with the published release once there is one.
 
 ## Troubleshooting

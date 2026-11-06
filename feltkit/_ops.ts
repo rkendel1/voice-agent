@@ -3,7 +3,7 @@
  * but every communication rule about *what* may be sent is here, in one path.
  */
 import { fail, type DatabaseReader, type DatabaseWriter, type Doc } from "@feltdb/feltkit";
-import { audit, businesses, contacts, conversations, messages, phoneNumbers, work } from "./app.js";
+import { audit, businesses, contacts, conversations, messages, phoneNumbers } from "./app.js";
 import { inQuietHours, withSenderLine } from "./_policy.js";
 
 export type BusinessDoc = Doc<typeof businesses.shape>;
@@ -46,11 +46,21 @@ export async function touchConversation(ctx: W, conversation: ConversationDoc, k
   });
 }
 
-/** Queue work for the voice runtime, once per (kind, ref): in the caller's transaction. */
-export async function enqueue(ctx: W, businessId: string, kind: "sms.send" | "call.dial" | "agent.sms" | "call.summarize", refId: string, now = Date.now()) {
-  const [existing] = await ctx.db.find(work, { kind, refId });
-  if (existing) return existing.id;
-  return ctx.db.insert(work, { businessId, kind, refId, status: "pending", attempts: 0, leaseUntil: 0, createdAt: now, updatedAt: now });
+export type WorkKind = "sms.send" | "call.dial" | "agent.sms" | "call.summarize";
+/** The voice runtime component's work, as it reaches `ctx.work.claim()`. */
+export interface WorkInput { businessId: string; refId: string }
+/** Tries before an item is given up (failed, inspectable, retryable by a person). */
+export const WORK_MAX_ATTEMPTS = 6;
+type Recorder = { afterCommit: { work(component: string, kind: string, input?: Record<string, unknown>, options?: { maxAttempts?: number }): { outboxId: string } } };
+
+/**
+ * Record work for the voice runtime component (FeltKit's durable work: the after-commit outbox). It exists exactly
+ * when the caller's transaction commits. Each caller records it once, in the transaction that creates its subject
+ * (the message, the call) or moves a call to its one terminal state, so a (kind, ref) is recorded once.
+ */
+export function enqueue(ctx: Recorder, businessId: string, kind: WorkKind, refId: string): string {
+  const input: WorkInput = { businessId, refId };
+  return ctx.afterCommit.work("voice", kind, { ...input }, { maxAttempts: WORK_MAX_ATTEMPTS }).outboxId;
 }
 
 export interface QueueSms {
@@ -72,7 +82,7 @@ export type QueueResult = { messageId: string; status: "queued" | "blocked"; rea
  * Queue a text to a contact, enforcing the business's communication policy. A refused text is still
  * recorded (status "blocked", with the reason) so the refusal is visible; it is never sent.
  */
-export async function queueSms(ctx: W, q: QueueSms): Promise<QueueResult> {
+export async function queueSms(ctx: W & Recorder, q: QueueSms): Promise<QueueResult> {
   const [prior] = await ctx.db.find(messages, { idempotencyKey: q.idempotencyKey });
   if (prior) return { messageId: prior.id, status: prior.status === "blocked" ? "blocked" : "queued", ...(prior.error ? { reason: prior.error } : {}), duplicate: true, body: prior.body, ...(prior.from ? { from: prior.from } : {}) };
   const text = q.body.trim();
@@ -100,7 +110,7 @@ export async function queueSms(ctx: W, q: QueueSms): Promise<QueueResult> {
     ...(q.callId ? { callId: q.callId } : {}), createdAt: q.now, updatedAt: q.now,
   });
   await touchConversation(ctx, q.conversation, "sms", reason ? `Not sent: ${reason}` : body, 0, q.now);
-  if (!reason) await enqueue(ctx, q.business.businessId, "sms.send", messageId, q.now);
+  if (!reason) enqueue(ctx, q.business.businessId, "sms.send", messageId);
   await recordAudit(ctx, q.business.businessId, q.author, q.authorKind, reason ? "sms.blocked" : "sms.queued", reason ? `Text to ${q.contact.phone} not sent: ${reason}` : `Text to ${q.contact.phone} queued`, messageId);
   return { messageId, status: reason ? "blocked" : "queued", ...(reason ? { reason } : {}), duplicate: false, body, ...(from ? { from: from.e164 } : {}) };
 }

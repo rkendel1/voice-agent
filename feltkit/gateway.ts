@@ -10,7 +10,7 @@
  *   - Work the runtime must do later (send, dial, reply, summarise) is queued in the same transaction.
  */
 import { fail, s, type MutationCtx } from "@feltdb/feltkit";
-import { agents, app, appointments, calls, contacts, conversations, invocations, messages, numberRoutes, phoneNumbers, providerEvents, runtimeStatus, transcripts, work } from "./app.js";
+import { agents, app, appointments, calls, contacts, conversations, invocations, messages, numberRoutes, phoneNumbers, providerEvents, runtimeStatus, transcripts } from "./app.js";
 import { business } from "./_authz.js";
 import { enqueue, ensureContact, ensureConversation, loadBusiness, queueSms, recordAudit, touchConversation } from "./_ops.js";
 import { agentOnDuty, CALL_TERMINAL, callAdvances, isOpen, localParts, smsAdvances, smsKeyword } from "./_policy.js";
@@ -59,36 +59,6 @@ export const status = app.query({
   handler: async (ctx) => (await ctx.db.find(runtimeStatus, {}))[0] ?? null,
 });
 
-/**
- * Lease due work: pending items, and leased items whose lease expired (a runtime that stopped
- * mid-work). The runtime finishes each with finishWork; an item that keeps failing is given up.
- */
-export const claimWork = app.mutation({
-  access: "voice.work",
-  args: { limit: s.integer({ minimum: 1, maximum: 50 }), leaseMs: s.integer({ minimum: 1000, maximum: 600_000 }) },
-  handler: async (ctx, { limit, leaseMs }) => {
-    const now = Date.now();
-    const due = [
-      ...(await ctx.db.find(work, { status: "pending" }, { limit: 200 })),
-      ...(await ctx.db.find(work, { status: "leased" }, { limit: 200 })).filter((w) => w.leaseUntil < now),
-    ].sort((a, b) => a.createdAt - b.createdAt).slice(0, limit);
-    for (const w of due) await ctx.db.patch(work, w.id, { status: "leased", leaseUntil: now + leaseMs, attempts: w.attempts + 1, updatedAt: now });
-    return due.map((w) => ({ id: w.id, businessId: w.businessId, kind: w.kind, refId: w.refId, attempts: w.attempts + 1, resumed: w.status === "leased" }));
-  },
-});
-
-export const finishWork = app.mutation({
-  access: "voice.work",
-  args: { id: s.string(), outcome: s.enum(["done", "retry", "failed"]), error: s.optional(s.string({ maxLength: 300 })), retryInMs: s.optional(s.integer({ minimum: 0, maximum: 3_600_000 })) },
-  handler: async (ctx, { id, outcome, error, retryInMs }) => {
-    const w = await ctx.db.get(work, id);
-    if (!w) return;
-    const now = Date.now();
-    if (outcome === "retry" && w.attempts < 6) await ctx.db.patch(work, id, { status: "leased", leaseUntil: now + (retryInMs ?? 2000 * 2 ** w.attempts), ...(error ? { lastError: error } : {}), updatedAt: now });
-    else await ctx.db.patch(work, id, { status: outcome === "done" ? "done" : "failed", ...(error ? { lastError: error } : {}), updatedAt: now });
-  },
-});
-
 // ── Texts ──────────────────────────────────────────────────────────────────
 
 /**
@@ -129,7 +99,7 @@ export const inboundSms = app.mutation({
       const [number] = await ctx.db.find(phoneNumbers, { e164: a.to });
       const agent = number?.agentId ? await ctx.db.get(agents, number.agentId) : null;
       if (agent?.active && agent.smsAutoReply && !contact.smsOptOut && agentOnDuty(agent.schedule, isOpen(b.hours, b.timezone, now))) {
-        await enqueue(ctx, businessId, "agent.sms", messageId, now);
+        enqueue(ctx, businessId, "agent.sms", messageId);
         outcome = "agent_reply_queued";
       }
     }
@@ -351,7 +321,7 @@ export const callStatus = app.mutation({
       const ended = (await ctx.db.get(calls, call.id))!;
       await recordAudit(ctx, businessId, a.sid, "provider", "call.ended", `Call ${call.direction === "inbound" ? "from" : "to"} ${call.direction === "inbound" ? call.from : call.to} ended: ${a.status}${ended.outcome ? ` (${ended.outcome})` : ""}`, call.id);
       if (ended.outcome === "missed") ctx.afterCommit.agent("voice", { callId: call.id });
-      if ((await ctx.db.query(transcripts, { where: [{ field: "callId", eq: call.id }], limit: 1 })).records.length) await enqueue(ctx, businessId, "call.summarize", call.id, now);
+      if ((await ctx.db.query(transcripts, { where: [{ field: "callId", eq: call.id }], limit: 1 })).records.length) enqueue(ctx, businessId, "call.summarize", call.id);
       ctx.afterCommit.webhooks.emit("call.completed", { businessId, callId: call.id, direction: call.direction, status: a.status, outcome: ended.outcome ?? null, durationSec: a.duration ?? null, contactId: call.contactId, at: now });
       const conv = await ctx.db.get(conversations, call.conversationId);
       if (conv) await touchConversation(ctx, conv, "call", `Call ${a.status}${ended.outcome ? ` · ${ended.outcome.replace("_", " ")}` : ""}`, ended.outcome === "missed" ? 1 : 0, now);

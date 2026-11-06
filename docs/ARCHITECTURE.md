@@ -75,9 +75,11 @@ The result is the only thing the agent may report. Requests for ungranted capabi
 policy so the refusal is decided and recorded there.
 
 **ADR-5 · Durable work, at-most-once effects.** Anything done after a request (send a text, dial, answer a
-text, summarise) is written to `work` in the same transaction as the record it is for, then leased by the
-runtime. Sends are claimed (`queued → sending`) before the provider is called; a lease that expires mid-send
-marks the message `unknown`, never resends. Provider events are deduplicated by `(provider, key)` in the
+text, summarise) is recorded as FeltKit durable work for the `voice` component (`ctx.afterCommit.work`) in the
+same transaction as the record it is for, then claimed by the component under a fenced lease (`ctx.work.claim`)
+and settled with a receipt (`ctx.work.finish`). The application keeps no queue of its own. Sends are claimed
+(`queued → sending`) before the provider is called; a lease that expires mid-send marks the message `unknown`
+and settles the work `unknown` (visible to an operator, never resent automatically). Provider events are deduplicated by `(provider, key)` in the
 transaction that applies them; statuses only move forward.
 
 **ADR-6 · A scripted brain by default.** The product works without a model: the deterministic agent answers,
@@ -117,7 +119,7 @@ are in Studio and the `feltkit` CLI, where FeltKit already manages them. Nothing
 | `tasks` | business | Follow-ups |
 | `audit` | business | Calls, texts, agent actions/refusals, interventions, configuration and consent changes |
 | `providerEvents` | global | Each provider event once |
-| `work` | global | The runtime's leased work queue |
+| (FeltKit outbox) | carries its business | The runtime's durable work: recorded by mutations with `ctx.afterCommit.work("voice", …)`, claimed and settled by the component through `ctx.work` (leased, fenced, receipts, `unknown` for a send that may have happened) |
 | `runtimeStatus` | global | The runtime's last health report |
 
 Global collections are read and written only by functions whose policy scope admits the voice runtime.

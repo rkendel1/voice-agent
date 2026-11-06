@@ -381,7 +381,7 @@ export const audit = app.collection("audit", {
   at: s.number(),
 }, { ...B, description: "Audit log: calls, texts, agent actions, interventions, transfers, configuration and consent changes.", indexes: [{ fields: ["businessId", "at"] }, { fields: ["type"] }] });
 
-// ── Provider events and runtime work (not business data) ───────────────────
+// ── Provider events and runtime status (not business data) ─────────────────
 
 /**
  * Every provider event once: (provider, key) is unique, so a duplicate or replayed webhook is
@@ -395,23 +395,6 @@ export const providerEvents = app.collection("providerEvents", {
   outcome: s.string({ maxLength: 200 }),
   at: s.number(),
 }, { description: "Provider webhook receipts, deduplicated by provider event key (idempotency and replay protection).", unique: [["provider", "key"]], indexes: [{ fields: ["at"] }] });
-
-/**
- * Work the voice runtime performs outside a request: sending a text, dialling a call, answering a
- * text with an agent, summarising a call. Written in the same transaction as the record it is for,
- * so work is never lost; leased, so a restarted runtime picks up what an earlier one left.
- */
-export const work = app.collection("work", {
-  businessId: s.string(),
-  kind: s.enum(["sms.send", "call.dial", "agent.sms", "call.summarize"]),
-  refId: s.string(),
-  status: s.enum(["pending", "leased", "done", "failed"]),
-  attempts: s.integer({ minimum: 0 }),
-  leaseUntil: s.number(),
-  lastError: s.optional(s.string({ maxLength: 300 })),
-  createdAt: s.number(),
-  updatedAt: s.number(),
-}, { description: "Durable work queue for the voice runtime (send, dial, agent replies, summaries).", unique: [["kind", "refId"]], indexes: [{ fields: ["status", "leaseUntil"] }] });
 
 /** What the running voice runtime last reported: provider, readiness, problems. Shown on Setup. */
 export const runtimeStatus = app.collection("runtimeStatus", {

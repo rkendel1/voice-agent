@@ -3,7 +3,8 @@
  * FeltKit (server/dev.ts, server/start.ts). It exists because telephony needs two things FeltKit does
  * not serve to applications: provider webhooks at public URLs (form-encoded, provider-signed) and a
  * long-lived WebSocket per call. It holds no state of its own: every event becomes a FeltKit call
- * (gateway/bridge.ts), and every piece of work it does later is leased from the `work` collection.
+ * (gateway/bridge.ts), and every piece of work it does later is FeltKit durable work recorded for this
+ * component by the application's mutations (`ctx.afterCommit.work`), claimed and settled through `ctx.work`.
  *
  * Configuration comes from Studio, re-read every few seconds, so changing it needs no restart:
  *   TELEPHONY_PROVIDER, TWILIO_ACCOUNT_SID, PUBLIC_BASE_URL (Configuration), twilio-auth-token (Credentials),
@@ -12,8 +13,9 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-import { isFeltKitError } from "@feltdb/feltkit";
+import { isFeltKitError, type ComponentWorkOutcome } from "@feltdb/feltkit";
 import type { ComponentContext, ComponentHealth, ComponentState } from "@feltdb/feltkit/server";
+import type { WorkInput } from "../feltkit/_ops.js";
 import { Bridge } from "./bridge.js";
 import { DeterministicBrain } from "./brain/deterministic.js";
 import { LlmBrain, type ModelConnection } from "./brain/llm.js";
@@ -287,16 +289,20 @@ export class VoiceRuntime {
     try {
       do {
         this.#again = false;
-        const items = await this.bridge.call<any[]>("gateway:claimWork", { limit: 10, leaseMs: 60_000 });
-        for (const w of items) {
+        const items = await this.bridge.context.work.claim({ limit: 10, leaseMs: 60_000 });
+        for (const item of items) {
           done++;
+          const w = { kind: item.kind, ...(item.input as unknown as WorkInput), resumed: item.resumed };
+          let outcome: ComponentWorkOutcome;
           try {
-            const outcome = await this.#perform(w);
-            await this.bridge.call("gateway:finishWork", { id: w.id, ...outcome });
+            outcome = await this.#perform(w);
           } catch (e: any) {
             const permanent = isFeltKitError(e) && ["FORBIDDEN", "NOT_FOUND", "INVALID_ARGUMENT", "FAILED_PRECONDITION"].includes(e.code);
-            await this.bridge.call("gateway:finishWork", { id: w.id, outcome: permanent ? "failed" : "retry", error: String(e?.message ?? e).slice(0, 300) }).catch(() => {});
+            const error = { ...(isFeltKitError(e) ? { code: e.code } : {}), message: String(e?.message ?? e).slice(0, 300) };
+            outcome = permanent ? { outcome: "failed", error } : { outcome: "retry", error };
           }
+          // Refused (CONFLICT) when the lease expired and another performer took the item over: theirs to settle.
+          await this.bridge.context.work.finish(item, outcome).catch((e) => this.log(`work ${item.id} not settled: ${e?.message ?? e}`));
         }
         if (items.length === 10) this.#again = true;
       } while (this.#again);
@@ -306,17 +312,21 @@ export class VoiceRuntime {
     return done;
   }
 
-  async #perform(w: { kind: string; refId: string; businessId: string; resumed?: boolean }): Promise<{ outcome: "done" | "retry" | "failed"; error?: string }> {
+  /** Perform one item; the outcome is its receipt (done), or why not (retry, failed). */
+  async #perform(w: WorkInput & { kind: string; resumed?: boolean }): Promise<ComponentWorkOutcome> {
     switch (w.kind) {
       case "sms.send": {
         const r = await this.sendNow(w.businessId, w.refId, { resumed: Boolean(w.resumed) });
-        return r.status === "queued" ? { outcome: "retry", error: String(r.error ?? "provider unreachable") } : { outcome: "done" };
+        if (r.status === "queued") return { outcome: "retry", error: { message: String(r.error ?? "provider unreachable") } };
+        // An earlier attempt may have reached the provider: never sent again by itself; a person decides.
+        if (r.status === "unknown") return { outcome: "unknown", error: { code: "SEND_OUTCOME_UNKNOWN", message: "The text may have been sent before the runtime stopped." }, receipt: { messageId: w.refId, status: r.status } };
+        return { outcome: "done", receipt: { messageId: w.refId, status: r.status } };
       }
-      case "call.dial": await this.dialNow(w.businessId, w.refId, { resumed: Boolean(w.resumed) }); return { outcome: "done" };
-      case "agent.sms": await this.#agentSms(w.businessId, w.refId); return { outcome: "done" };
-      case "call.summarize": await this.#summarize(w.businessId, w.refId); return { outcome: "done" };
+      case "call.dial": await this.dialNow(w.businessId, w.refId, { resumed: Boolean(w.resumed) }); return { outcome: "done", receipt: { callId: w.refId } };
+      case "agent.sms": await this.#agentSms(w.businessId, w.refId); return { outcome: "done", receipt: { messageId: w.refId } };
+      case "call.summarize": await this.#summarize(w.businessId, w.refId); return { outcome: "done", receipt: { callId: w.refId } };
     }
-    return { outcome: "failed", error: `Unknown work ${w.kind}` };
+    return { outcome: "failed", error: { code: "UNKNOWN_KIND", message: `Unknown work ${w.kind}` } };
   }
 
   /**

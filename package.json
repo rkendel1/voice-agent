@@ -30,7 +30,7 @@
     "test:e2e": "node e2e/voice-agent.e2e.cjs"
   },
   "dependencies": {
-    "@feltdb/feltkit": "file:vendor/feltdb-feltkit-0.3.19-components.0.tgz",
+    "@feltdb/feltkit": "file:vendor/feltdb-feltkit-0.3.19-components.1.tgz",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "tsx": "^4.20.6",

@@ -60,13 +60,13 @@ test("agent restart: work a stopped runtime had leased is taken over when its le
     await post(s.rt, "/simulator/sms", { from: CALLER, to: NUMBER, body: "hello" });
     const [conv] = await s.ada.query(api.conversations.list, {});
     // Runtime A leases everything and dies before finishing.
-    const leased = await s.rt.bridge.call("gateway:claimWork", { limit: 10, leaseMs: 1000 });
+    const leased = await s.rt.bridge.context.work.claim({ limit: 10, leaseMs: 1000 });
     assert.equal(leased.length, 1);
     // A text it was in the middle of sending: claimed (sending), provider answer never recorded.
     const otherId = await s.ada.mutation(api.contacts.save, { phone: "+15557770777", name: "Other" });
     const other = (await s.ada.query(api.conversations.list, {})).find((c: any) => c.contactId === otherId)!;
     const r = await s.ada.mutation(api.conversations.reply, { conversationId: other.id, body: "mid-send", idempotencyKey: "midsend-001" });
-    await s.rt.bridge.call("gateway:claimWork", { limit: 10, leaseMs: 1000 });
+    await s.rt.bridge.context.work.claim({ limit: 10, leaseMs: 1000 });
     await s.rt.bridge.call("gateway:sendClaim", { messageId: r.messageId }, s.acme.id);
     assert.equal(await s.rt.work(), 0, "nothing is due while the leases hold");
     await new Promise((res) => setTimeout(res, 1100));
@@ -82,6 +82,19 @@ test("agent restart: work a stopped runtime had leased is taken over when its le
       assert.equal(mid.status, "unknown", "may have been sent: recorded as unknown, not sent again");
       const texts = (await (await fetch(`${b.url}/simulator/phone?number=%2B15557770777`)).json()).texts;
       assert.ok(!texts.some((t: any) => t.body.includes("mid-send")));
+      // FeltKit durable work holds the record of each: a receipt for what was done, `unknown` (never retried
+      // automatically) for the send that may have happened.
+      // The agent's reply was sent at once; its own send work is recorded too and, performed later, sends nothing twice.
+      await b.work();
+      const toCaller = (await (await fetch(`${b.url}/simulator/phone?number=${encodeURIComponent(CALLER)}`)).json()).texts;
+      assert.equal(toCaller.length, 1, "the caller received the agent's reply once");
+      const work = (await (s.t.runtime as any).listOutbox({})).filter((w: any) => w.effect.service === "component");
+      assert.deepEqual(work.filter((w: any) => ["pending", "performing", "failed"].includes(w.state)), [], "nothing left over");
+      const uncertain = work.find((w: any) => w.effect.input.refId === r.messageId);
+      assert.deepEqual([uncertain.state, uncertain.effect.kind], ["unknown", "sms.send"]);
+      const reply = work.find((w: any) => w.effect.kind === "agent.sms");
+      assert.deepEqual([reply.state, reply.attempts >= 2], ["done", true], "the resumed agent reply settled with a receipt");
+      assert.ok(reply.result, "receipt recorded");
     } finally { await b.close(); }
   } finally { await s.t.close(); }
 });

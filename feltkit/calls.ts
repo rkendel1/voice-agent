@@ -82,7 +82,7 @@ export const start = app.mutation({
       from: from.e164, to: contact.phone, status: "queued", handling: agent?.active ? "agent" : "operator", ...(agent?.active ? { agentId: agent.id } : {}),
       session: "none", startedAt: now, startedBy: key,
     });
-    await enqueue(ctx, businessId, "call.dial", callId, now);
+    enqueue(ctx, businessId, "call.dial", callId);
     await touchConversation(ctx, conversation, "call", `Outbound call by ${actorName}`, 0, now);
     await recordAudit(ctx, businessId, actor, "human", "call.outbound", `${actorName} called ${contact.name ?? contact.phone}${agent?.active ? ` with agent ${agent.name}` : ""}`, callId);
     return { callId, duplicate: false };
