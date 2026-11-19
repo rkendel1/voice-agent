@@ -27,9 +27,11 @@ export function App() {
   const [seeding, setSeeding] = useState(false);
 
   // Development: ?as=<dev user> signs this window in as that identity.
+  // Otherwise, signed out with dev users on offer (development, or a demo deployment), sign in as the
+  // first one so the app opens ready to use instead of on the sign-in page.
   const tried = useRef(false);
   useEffect(() => {
-    const wanted = new URLSearchParams(location.search).get("as");
+    const wanted = new URLSearchParams(location.search).get("as") ?? (auth.user ? null : auth.session?.devUsers?.[0]?.id);
     if (!auth.session || tried.current || !wanted || auth.user?.id === wanted) return;
     if (!auth.session.devUsers?.some((u) => u.id === wanted)) return;
     tried.current = true;
