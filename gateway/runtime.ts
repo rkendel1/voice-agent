@@ -423,7 +423,8 @@ export class VoiceRuntime {
     const callId = url.searchParams.get("callId"), b = url.searchParams.get("b"), t = url.searchParams.get("t");
     const refuse = (code: number, why: string) => { this.noteRefusal(provider ?? "simulator", `WebSocket refused: ${why}`); socket.end(`HTTP/1.1 ${code} ${why}\r\n\r\n`); };
     if (!provider || !callId || !b || !t) return refuse(404, "Not Found");
-    if (provider === "simulator" && (!this.simulatorEnabled || !isLoopback(req))) return refuse(403, "Forbidden");
+    if (provider === "simulator" && (!this.simulatorEnabled || !this.#simulatorReachable(req))) return refuse(403, "Forbidden");
+    if (provider === "simulator" && this.publicDemo && this.sessions.size >= DEMO_MAX_SESSIONS) return refuse(503, "Service Unavailable");
     if (provider === "twilio") {
       if (!this.settings.authToken || !this.settings.publicBaseUrl) return refuse(503, "Service Unavailable");
       const wsUrl = `${this.settings.publicBaseUrl.replace(/^http/, "ws")}${req.url}`;
@@ -543,16 +544,16 @@ export class VoiceRuntime {
    */
   async #simulatorRoute(req: IncomingMessage, res: ServerResponse, url: URL) {
     const origin = header(req, "origin");
-    if (origin && this.#allowedOrigin(origin)) {
+    if (origin && this.#allowedOrigin(origin, req)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Headers", "content-type");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST");
       res.setHeader("Vary", "Origin");
     }
     if (req.method === "OPTIONS") return void res.writeHead(204).end();
-    if (!this.simulatorEnabled || !isLoopback(req)) return json(res, 403, { error: "The simulator is available only in development, on this machine." });
-    this.#simulatorBase = `http://${header(req, "host")}`;
-    if (origin && !this.#allowedOrigin(origin)) return json(res, 403, { error: "Origin not allowed." });
+    if (!this.simulatorEnabled || !this.#simulatorReachable(req)) return json(res, 403, { error: "The simulator is available only in development, on this machine." });
+    this.#simulatorBase = `${this.publicDemo ? header(req, "x-forwarded-proto")?.split(",")[0] ?? "http" : "http"}://${header(req, "host")}`;
+    if (origin && !this.#allowedOrigin(origin, req)) return json(res, 403, { error: "Origin not allowed." });
     if (req.method === "GET" && url.pathname === "/simulator/phone") {
       const number = url.searchParams.get("number") ?? "";
       return json(res, 200, { texts: this.simulator.texts.get(number) ?? [], ringing: [...this.simulator.ringing.values()].filter((r) => r.to === number).map((r) => ({ sid: r.sid, from: r.from, at: r.at })) });
@@ -602,13 +603,29 @@ export class VoiceRuntime {
     return json(res, 404, { error: "Not found" });
   }
 
-  #allowedOrigin(origin: string) {
+  /**
+   * The public demo (DEMO_PUBLIC=1, set by scripts/demo-server.mjs): visitors anywhere may use the simulator
+   * (its web chat and phone), on the app's own origin. Never set it on a deployment with real keys or data.
+   */
+  get publicDemo(): boolean {
+    return process.env.DEMO_PUBLIC === "1";
+  }
+
+  #simulatorReachable(req: IncomingMessage) {
+    return this.publicDemo || isLoopback(req);
+  }
+
+  #allowedOrigin(origin: string, req: IncomingMessage) {
     try {
       const o = new URL(origin);
+      if (this.publicDemo && o.host === header(req, "host")) return true;
       return ["localhost", "127.0.0.1"].includes(o.hostname);
     } catch { return false; }
   }
 }
+
+/** Concurrent media sessions the public demo accepts: a shared demo must not be exhausted by one visitor. */
+const DEMO_MAX_SESSIONS = 25;
 
 function describeAction(a: { capability: string; result: any }): string {
   const r = a.result ?? {};

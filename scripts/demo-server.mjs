@@ -27,7 +27,7 @@ if (process.env.FELTKIT_ENV && process.env.FELTKIT_ENV !== "development") {
   process.exit(1);
 }
 const args = [feltkit, "start", "--env", "development", "--host", process.env.HOST ?? "0.0.0.0", ...process.argv.slice(2)];
-const server = spawn(process.execPath, args, { cwd: root, stdio: ["inherit", "pipe", "inherit"] });
+const server = spawn(process.execPath, args, { cwd: root, stdio: ["inherit", "pipe", "inherit"], env: { ...process.env, DEMO_PUBLIC: "1" } });
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.kill(signal));
 server.on("exit", (code, signal) => process.exit(code ?? (signal ? 1 : 0)));
 

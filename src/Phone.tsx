@@ -10,19 +10,23 @@ import { fmtPhone, type Toasts } from "./ui";
  * "Speak" on, the browser reads the agent aloud; the microphone uses the browser's speech recognition
  * where available (Chrome). Nothing here is a real phone call.
  */
-type Line = { who: "me" | "agent" | "system"; text: string };
+type Line = { who: "me" | "agent" | "system"; text: string; live?: boolean };
 
-export function SimulatorPhone({ runtimeUrl, onClose, toasts }: { runtimeUrl: string; onClose: () => void; toasts: Toasts }) {
+export function SimulatorPhone({ runtimeUrl: configured, onClose, toasts }: { runtimeUrl: string; onClose: () => void; toasts: Toasts }) {
+  // On the machine running the app the runtime is reached directly; anywhere else (a public demo) on the app's own origin.
+  const runtimeUrl = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) ? configured : "";
   const numbers = (useQuery(api.numbers.list, {}) ?? []).filter((n: any) => n.provider === "simulator");
   const [mine, setMine] = useState(() => { try { return localStorage.getItem("sim.phone") ?? "+15557770123"; } catch { return "+15557770123"; } });
   const [target, setTarget] = useState("");
-  const [tab, setTab] = useState<"call" | "texts">("call");
+  const [tab, setTab] = useState<"chat" | "call" | "texts">("chat");
   const [phoneState, setPhoneState] = useState<{ texts: any[]; ringing: any[] }>({ texts: [], ringing: [] });
   const [sent, setSent] = useState<Array<{ body: string; at: number }>>([]);
   const [draft, setDraft] = useState("");
   const [call, setCall] = useState<null | { sid: string; ws: WebSocket | null; status: string }>(null);
   const [lines, setLines] = useState<Line[]>([]);
   const [speak, setSpeak] = useState(true);
+  const [waiting, setWaiting] = useState(false);
+  const tabNow = useRef<string>("chat");
   const [listening, setListening] = useState(false);
   const current = useRef("");
   const spoken = useRef(0);
@@ -30,6 +34,7 @@ export function SimulatorPhone({ runtimeUrl, onClose, toasts }: { runtimeUrl: st
   const scroller = useRef<HTMLDivElement>(null);
   const to = target || numbers[0]?.e164 || "";
 
+  tabNow.current = tab;
   useEffect(() => { try { localStorage.setItem("sim.phone", mine); } catch { /* private mode */ } }, [mine]);
   useEffect(() => {
     const poll = async () => {
@@ -50,7 +55,7 @@ export function SimulatorPhone({ runtimeUrl, onClose, toasts }: { runtimeUrl: st
   };
 
   const say = (text: string) => {
-    if (!speak || !("speechSynthesis" in window)) return;
+    if (!speak || tabNow.current !== "call" || !("speechSynthesis" in window)) return;
     const u = new SpeechSynthesisUtterance(text);
     u.onstart = () => { speaking.current = true; spoken.current = 0; };
     u.onboundary = (e) => { spoken.current = e.charIndex; };
@@ -69,14 +74,22 @@ export function SimulatorPhone({ runtimeUrl, onClose, toasts }: { runtimeUrl: st
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
       if (m.type === "text") {
-        current.current += m.token;
+        // Tokens appear as they stream (the agent "types"); the finished answer is then read aloud if asked.
+        if (m.token) {
+          current.current += m.token;
+          setWaiting(false);
+          setLines((l) => { const last = l.at(-1); return last?.live ? [...l.slice(0, -1), { ...last, text: last.text + m.token }] : [...l, { who: "agent", text: m.token, live: true }]; });
+        }
         if (m.last) {
           const text = current.current.trim();
           current.current = "";
-          if (text) { setLines((l) => [...l, { who: "agent", text }]); say(text); }
+          setWaiting(false);
+          setLines((l) => l.map((x, i) => (i === l.length - 1 && x.live ? { who: x.who, text: x.text.trim() } : x)).filter((x) => x.text));
+          if (text) say(text);
         }
       }
       if (m.type === "end") {
+        setWaiting(false);
         const h = JSON.parse(m.handoffData ?? "{}");
         setLines((l) => [...l, { who: "system", text: h.reason === "transfer" ? "Transferring to a person (simulated) — call ends here." : "The agent ended the call." }]);
       }
@@ -88,6 +101,7 @@ export function SimulatorPhone({ runtimeUrl, onClose, toasts }: { runtimeUrl: st
   const dial = async () => {
     if (!to) return toasts.error("Add a simulator number first (Phone numbers).");
     setLines([]);
+    setWaiting(false);
     try {
       const r = await post("/simulator/call", { from: mine, to });
       setCall({ sid: r.sid, ws: null, status: "connecting" });
@@ -118,7 +132,9 @@ export function SimulatorPhone({ runtimeUrl, onClose, toasts }: { runtimeUrl: st
       current.current = "";
       window.speechSynthesis?.cancel();
       speaking.current = false;
+      setLines((l) => l.map((x) => (x.live ? { who: x.who, text: x.text } : x)));
     }
+    setWaiting(true);
     ws.send(JSON.stringify({ type: "prompt", voicePrompt: text.trim(), lang: "en-US", last: true }));
     setLines((l) => [...l, { who: "me", text: text.trim() }]);
   };
@@ -140,7 +156,7 @@ export function SimulatorPhone({ runtimeUrl, onClose, toasts }: { runtimeUrl: st
   return (
     <aside className="phone" aria-label="Simulator phone">
       <header className="phone-head">
-        <div><strong>Simulator phone</strong><div className="small">Development only · not a real call</div></div>
+        <div><strong>Simulator phone</strong><div className="small">Simulated · not a real call or text</div></div>
         <button className="ghost" onClick={onClose} aria-label="Close">✕</button>
       </header>
       <div className="phone-setup">
@@ -153,27 +169,27 @@ export function SimulatorPhone({ runtimeUrl, onClose, toasts }: { runtimeUrl: st
           <div className="actions"><button onClick={() => void answer(ringing.sid)}>Answer</button><button className="danger" onClick={() => void post("/simulator/decline", { sid: ringing.sid }).catch(toasts.error)}>Decline</button></div>
         </div>
       )}
-      <div className="segmented phone-tabs"><button className={tab === "call" ? "on" : ""} onClick={() => setTab("call")}>Call</button><button className={tab === "texts" ? "on" : ""} onClick={() => setTab("texts")}>Texts {phoneState.texts.length ? `(${phoneState.texts.length})` : ""}</button></div>
+      <div className="segmented phone-tabs"><button className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}>Chat</button><button className={tab === "call" ? "on" : ""} onClick={() => setTab("call")}>Call</button><button className={tab === "texts" ? "on" : ""} onClick={() => setTab("texts")}>Texts {phoneState.texts.length ? `(${phoneState.texts.length})` : ""}</button></div>
       <div className="phone-body" ref={scroller}>
-        {tab === "call" ? (
-          lines.length ? lines.map((l, i) => <div key={i} className={`pl ${l.who}`}>{l.text}</div>) : <p className="muted small pad">Call the business and talk to its agent. Try: “I'd like to book an appointment tomorrow”, “what are your hours?”, “can I leave a message?”, or “let me talk to a person”.</p>
+        {tab !== "texts" ? (
+          lines.length || waiting ? <>{lines.map((l, i) => <div key={i} className={`pl ${l.who}`}>{l.text}</div>)}{waiting && <div className="pl agent typing" aria-label="The agent is typing"><span /><span /><span /></div>}</> : tab === "chat" ? <p className="muted small pad">Chat live with the business's agent: its answer appears as it is written. Try: “what are your hours?”, “I'd like to book an appointment tomorrow”, “can I leave a message?”, or “let me talk to a person”.</p> : <p className="muted small pad">Call the business and talk to its agent. Try: “I'd like to book an appointment tomorrow”, “what are your hours?”, “can I leave a message?”, or “let me talk to a person”.</p>
         ) : (
           thread.length ? thread.map((t, i) => <div key={i} className={`pl ${t.me ? "me" : "agent"}`}>{t.body}</div>) : <p className="muted small pad">Text the business. Send STOP to opt out, START to opt back in.</p>
         )}
       </div>
-      {tab === "call" ? (
+      {tab !== "texts" ? (
         call ? (
           <div className="phone-controls">
             <form onSubmit={(e) => { e.preventDefault(); send(draft); setDraft(""); }}>
-              <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={call.ws ? "Say something…" : "Call ended"} disabled={!call.ws} aria-label="Say" />
-              <button type="button" className={`secondary ${listening ? "on" : ""}`} onClick={listen} disabled={!call.ws} title="Speak (browser speech recognition)">🎤</button>
+              <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={call.ws ? (tab === "chat" ? "Message the agent…" : "Say something…") : tab === "chat" ? "Chat ended" : "Call ended"} disabled={!call.ws} aria-label="Say" />
+              {tab === "chat" ? <button type="submit" disabled={!call.ws}>Send</button> : <button type="button" className={`secondary ${listening ? "on" : ""}`} onClick={listen} disabled={!call.ws} title="Speak (browser speech recognition)">🎤</button>}
             </form>
             <div className="actions">
-              <label className="toggle small"><input type="checkbox" checked={speak} onChange={(e) => { setSpeak(e.target.checked); if (!e.target.checked) window.speechSynthesis?.cancel(); }} /> Speak aloud</label>
-              <button className="danger" onClick={() => void hangup()}>{call.ws ? "Hang up" : "Close"}</button>
+              {tab === "call" ? <label className="toggle small"><input type="checkbox" checked={speak} onChange={(e) => { setSpeak(e.target.checked); if (!e.target.checked) window.speechSynthesis?.cancel(); }} /> Speak aloud</label> : <span />}
+              <button className="danger" onClick={() => void hangup()}>{call.ws ? (tab === "chat" ? "End chat" : "Hang up") : "Close"}</button>
             </div>
           </div>
-        ) : <div className="phone-controls"><button className="call-btn" onClick={() => void dial()} disabled={!to}>📞 Call {fmtPhone(to)}</button></div>
+        ) : <div className="phone-controls"><button className="call-btn" onClick={() => void dial()} disabled={!to}>{tab === "chat" ? "💬 Start chat" : `📞 Call ${fmtPhone(to)}`}</button></div>
       ) : (
         <form className="phone-controls" onSubmit={(e) => { e.preventDefault(); const body = draft.trim(); if (!body) return; void post("/simulator/sms", { from: mine, to, body }).then(() => { setSent((s) => [...s, { body, at: Date.now() }]); setDraft(""); }, toasts.error); }}>
           <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Text message" aria-label="Text message" />

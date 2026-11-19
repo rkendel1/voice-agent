@@ -181,6 +181,22 @@ test("the simulator answers only on this machine", async () => {
   } finally { await s.close(); }
 });
 
+test("the public demo opens the simulator to visitors on the app's own origin only", async () => {
+  process.env.DEMO_PUBLIC = "1";
+  const s = await setup();
+  try {
+    const { request } = await import("node:http");
+    const port = new URL(s.rt.url).port;
+    const send = (headers: Record<string, string>) => new Promise<number>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path: "/simulator/sms", method: "POST", headers: { "content-type": "application/json", ...headers } }, (res) => { res.resume(); resolve(res.statusCode!); });
+      req.on("error", reject);
+      req.end(JSON.stringify({ from: CALLER, to: NUMBER, body: "x" }));
+    });
+    assert.equal(await send({ host: "voice-agent-demo.fly.dev" }), 200);
+    assert.equal(await send({ host: "voice-agent-demo.fly.dev", origin: "https://evil.example.com" }), 403);
+  } finally { delete process.env.DEMO_PUBLIC; await s.close(); }
+});
+
 function pick(a: any) {
   const { id, name, purpose, instructions, greeting, voice, brain, temperature, capabilities, escalateTo, schedule, smsAutoReply, active } = a;
   return { id, name, purpose, instructions, greeting, voice, brain, temperature, capabilities, ...(escalateTo ? { escalateTo } : {}), schedule, smsAutoReply, active };

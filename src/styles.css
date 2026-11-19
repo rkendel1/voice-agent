@@ -270,6 +270,11 @@ ul.plain { margin: 0; padding-left: 18px; }
 .pl { max-width: 85%; padding: 7px 11px; border-radius: 14px; font-size: 13.5px; white-space: pre-wrap; }
 .pl.agent { background: var(--surface-2); border: 1px solid var(--line); align-self: flex-start; }
 .pl.me { background: var(--sim); color: #fff; align-self: flex-end; }
+.pl.typing { display: flex; gap: 4px; padding: 11px 13px; }
+.pl.typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: typing 1s infinite ease-in-out; }
+.pl.typing span:nth-child(2) { animation-delay: .15s; }
+.pl.typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes typing { 0%, 60%, 100% { opacity: .3; transform: none; } 30% { opacity: 1; transform: translateY(-3px); } }
 .pl.system { align-self: center; font-size: 12px; color: var(--muted); font-style: italic; }
 .phone-controls { border-top: 1px solid var(--line); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .phone-controls form, form.phone-controls { display: flex; flex-direction: row; gap: 6px; }
